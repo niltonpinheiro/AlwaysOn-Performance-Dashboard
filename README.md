@@ -11,7 +11,9 @@ Deploying the reports to a file share (accessible by all replicas) or to the loc
 On SSMS, register the dashboard report "AlwaysOn Performance Dashboard" as an Custom reports...
 
 3. To remove the dashboard
---- Run the script "drop_all_objects" to generate a list of all objects used bu the reports
+
+--- Run the script "drop_all_objects" to generate a list of all objects used by the reports
+
 --- DROP all the objects and jobs
 
 
