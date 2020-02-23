@@ -1,7 +1,7 @@
 # AlwaysOn Performance Dashboard
 
 Data Collection
-1. Setup.sql ---- This T-SQL script creates the schema (rpt), objects and SQL Agent Jobs required for performance data collection. This script need to be ran on all the sql instance which needs to be monitored. You also can use this dashboard to monitor CPU, DISK and RAM even with no AG configured, but in this case I recommend you to take a look at the article https://docs.microsoft.com/en-us/archive/blogs/sql_server_team/sql-server-performance-baselining-reports-unleashed-for-enterprise-monitoring
+1. Setup.sql ---- This T-SQL script creates the schema (rpt), objects and SQL Agent Jobs required for performance data collection. The objects are created on MSDB database and this script need to be ran on all the sql instance (replicas) which needs to be monitored. You also can use this dashboard to monitor CPU, DISK and RAM even with no AG configured, but in this case I recommend you to take a look at the article https://docs.microsoft.com/en-us/archive/blogs/sql_server_team/sql-server-performance-baselining-reports-unleashed-for-enterprise-monitoring
 
 2. Data Collection Steps for each SQL Instance to Monitor
 Open an SSMS connection to the PRIMARY and SECONDARY replicas you want to monitor
