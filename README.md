@@ -1,5 +1,42 @@
 # AlwaysOn Performance Dashboard
 
+The AlwaysOn Performance Dashboard is a collection of reports that you can use on SSMS to get performance metrics about the SQL Server machine and AlwaysOn Availabiltiy groups replicas. The principals performance counters collected from primary and secondary replicas are:
+
+<Primário>
+SQL Server: Databases
+	• Log Bytes Flushed/sec
+	• Log Flush Write time (ms)
+	• Transaction/sec	
+SQL Server: Availability Replica
+	• Bytes Sent to Replica/sec
+	• Bytes Sent to Transport/sec ***
+SQL Server: Database Replica
+	• Transaction Delay
+	• Mirrored Write Transactions/sec
+Logical Disk:
+	• Avg. Disk sec/Read
+	• Avg. Disk sec/Writes
+	• Disk Transfer/sec
+
+<Secundário>
+SQL Server: Databases
+	• Log Bytes Flushed/sec
+	• Log Flush Write time (ms)
+	• Transaction/sec
+SQL Server: Availability Replica
+	• Bytes Received from Replica/sec
+SQL Server: Database Replica
+	• Log Bytes Received/sec
+	• Redone Bytes/sec
+	• Recovery Queue
+	• Log Send Queue
+Logical Disk:
+	• Avg. Disk sec/Read
+	• Avg. Disk sec/Writes
+	• Disk Transfer/sec
+
+The setup of the AlwaysOn Performance Dashboard reports consists of the following three phases:
+
 Data Collection
 1. Setup.sql 
 
