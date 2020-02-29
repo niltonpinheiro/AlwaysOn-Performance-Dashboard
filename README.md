@@ -52,7 +52,7 @@ Check SQL Agent JOBs to see if the new jobs AlwaysOn: PerfDashboard Collection C
 
 Copy the reports (.rdl files) to a file share (accessible by all replicas) or to a local disk of one of the replicas
 
-On SSMS, open the Alwayon Dashboard Report (AlwaysOn Performance Dashboard.rdl) using the option Reports\Custom Reports... on the instance level context menu
+On SSMS, open the AlwayOn Dashboard Report (AlwaysOn Performance Dashboard.rdl) using the option Reports\Custom Reports... on the instance level context menu
 
 3. To remove the dashboard
 
