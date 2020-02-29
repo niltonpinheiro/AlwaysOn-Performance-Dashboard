@@ -36,7 +36,7 @@ Logical Disk:
 	• Avg. Disk sec/Writes
 	• Disk Transfer/sec
 
-The setup of the AlwaysOn Performance Dashboard reports consists of the following three phases:
+# The setup of the AlwaysOn Performance Dashboard reports consists of the following three phases:
 
 1. Setup.sql 
 
