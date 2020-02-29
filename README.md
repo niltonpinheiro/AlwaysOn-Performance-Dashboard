@@ -44,18 +44,11 @@ This T-SQL script creates the schema (rpt), objects and SQL Agent Jobs required 
 
 ### 2. Data Collection Steps for each SQL Instance to Monitor
 
-a.	Open an SSMS connection to the PRIMARY and SECONDARY replicas you want to monitor
-b.	Run the setup.sql script on each replica
-c.	Check SQL Agent JOBs to see if the new jobs AlwaysOn: PerfDashboard Collection Counter and AlwaysOn: PerfDashboard Purge) are running successfully
-d.	Copy the reports (.rdl files) to a file share (accessible by all replicas) or to a local disk of one of the replicas
-e.	On SSMS, open the AlwayOn Dashboard Report (AlwaysOn Performance Dashboard.rdl) using the option Reports\Custom Reports... on the instance level context menu
-
 1.	Open an SSMS connection to the PRIMARY and SECONDARY replicas you want to monitor
 2.	Run the setup.sql script on each replica
 3.	Check SQL Agent JOBs to see if the new jobs AlwaysOn: PerfDashboard Collection Counter and AlwaysOn: PerfDashboard Purge) are running successfully
 4.	Copy the reports (.rdl files) to a file share (accessible by all replicas) or to a local disk of one of the replicas
-5.	On SSMS, open the AlwayOn Dashboard Report (AlwaysOn Performance Dashboard.rdl) using the option Reports\Custom Reports... on the instance level context menu
-6.	Repeat for each SQL Instance you want to monitor
+5.	On SSMS, open the AlwayOn Dashboard Report (AlwaysOn Performance Dashboard.rdl) using the option Reports\Custom Reports... on the instance level context menu.
 
 ### 3. To remove the dashboard
 
