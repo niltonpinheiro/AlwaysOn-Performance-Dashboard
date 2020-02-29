@@ -1,6 +1,7 @@
 # AlwaysOn Performance Dashboard
 
-The AlwaysOn Performance Dashboard is a collection of reports that you can use on SSMS to get performance metrics about the SQL Server machine and AlwaysOn Availabiltiy groups replicas. The principals performance counters collected from primary and secondary replicas are:
+The AlwaysOn Performance Dashboard is a collection of reports that you can use on SSMS to get performance metrics about the SQL Server machine and AlwaysOn Availabiltiy Group. The principals performance counters collected from primary and secondary replicas are:
+
 
 <Primário>
 SQL Server: Databases
