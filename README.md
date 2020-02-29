@@ -38,6 +38,16 @@ Logical Disk:
 
 ## The setup of the AlwaysOn Performance Dashboard reports consists of the following three phases:
 
+
+### Data Collection Steps for each SQL Instance to Monitor
+
+1.	Connect to SQL instance to monitor
+2.	Run CREATEDATABASE.sql
+3.	Run CREATEOBJECTS.sql
+4.	Run CREATECOLLECTIONJOB.sql
+5.	Check SQL Agent JOBs History to see if it runs successfully
+6.	Repeat for each SQL Instance you want to monitor
+
 ### 1. Setup.sql 
 
 This T-SQL script creates the schema (rpt), objects and SQL Agent Jobs required for performance data collection. The objects are created on MSDB database and this script need to be ran on all the sql instance (replicas) which needs to be monitored. You can also use this dashboard to monitor CPU, DISK and RAM on SQL Server machine with no Availability Group configured, but in this case I recommend you to take a look at the article https://docs.microsoft.com/en-us/archive/blogs/sql_server_team/sql-server-performance-baselining-reports-unleashed-for-enterprise-monitoring
