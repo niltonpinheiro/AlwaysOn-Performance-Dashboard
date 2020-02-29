@@ -50,7 +50,7 @@ c.	Check SQL Agent JOBs to see if the new jobs AlwaysOn: PerfDashboard Collectio
 d.	Copy the reports (.rdl files) to a file share (accessible by all replicas) or to a local disk of one of the replicas
 e.	On SSMS, open the AlwayOn Dashboard Report (AlwaysOn Performance Dashboard.rdl) using the option Reports\Custom Reports... on the instance level context menu
 
-1.	Connect to SQL instance to monitor
+1.	Open an SSMS connection to the PRIMARY and SECONDARY replicas you want to monitor
 2.	Run CREATEDATABASE.sql
 3.	Run CREATEOBJECTS.sql
 4.	Run CREATECOLLECTIONJOB.sql
