@@ -36,17 +36,9 @@ Logical Disk:
 	• Avg. Disk sec/Writes
 	• Disk Transfer/sec
 
-## The setup of the AlwaysOn Performance Dashboard reports consists of the following three phases:
+## Setup of the AlwaysOn Performance Dashboard reports consists of the following three phases:
 
 
-### Data Collection Steps for each SQL Instance to Monitor
-
-1.	Connect to SQL instance to monitor
-2.	Run CREATEDATABASE.sql
-3.	Run CREATEOBJECTS.sql
-4.	Run CREATECOLLECTIONJOB.sql
-5.	Check SQL Agent JOBs History to see if it runs successfully
-6.	Repeat for each SQL Instance you want to monitor
 
 ### 1. Setup.sql 
 
@@ -54,15 +46,11 @@ This T-SQL script creates the schema (rpt), objects and SQL Agent Jobs required 
 
 ### 2. Data Collection Steps for each SQL Instance to Monitor
 
-Open an SSMS connection to the PRIMARY and SECONDARY replicas you want to monitor
-
-Run the setup.sql script on each replica
-
-Check SQL Agent JOBs to see if the new jobs AlwaysOn: PerfDashboard Collection Counter and AlwaysOn: PerfDashboard Purge) are running successfully.
-
-Copy the reports (.rdl files) to a file share (accessible by all replicas) or to a local disk of one of the replicas
-
-On SSMS, open the AlwayOn Dashboard Report (AlwaysOn Performance Dashboard.rdl) using the option Reports\Custom Reports... on the instance level context menu
+a.	Open an SSMS connection to the PRIMARY and SECONDARY replicas you want to monitor
+b.	Run the setup.sql script on each replica
+c.	Check SQL Agent JOBs to see if the new jobs AlwaysOn: PerfDashboard Collection Counter and AlwaysOn: PerfDashboard Purge) are running successfully
+d.	Copy the reports (.rdl files) to a file share (accessible by all replicas) or to a local disk of one of the replicas
+e.	On SSMS, open the AlwayOn Dashboard Report (AlwaysOn Performance Dashboard.rdl) using the option Reports\Custom Reports... on the instance level context menu
 
 ### 3. To remove the dashboard
 
