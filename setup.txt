@@ -1,0 +1,1402 @@
+/*
+---====================================================================
+
+|--- Script to setup Alwayson Dashboard. Run it on msdb database
+
+--- *** RUN THIS SETUP SCRIPT ON ALL AVAILABILITY GROUP REPLICAS WHERE THE DASHBOARD WILL BE USED*** --
+
+| --- After execute the scrip on all replicas copy the reports to a share folder OR to the SQL Server machine
+| --- On SSMS, open the Alwayon Dashboard Report (AlwaysOn Performance Dashboard.rdl) using the option Reports\Custom Reports... on the instance context menu
+
+
+Pre-req:
+	|-- xp_cmdshell MUST be enabled to call the powershell command to collect the performance counters
+	|--- sp_configure 'xp_cmdshell', 1; reconfigure with override
+
+Objects:
+--- [rpt].[PerformanceCounterList] -- this table has the list of perf counters to collect (is_captured_ind=1).
+	|-- By default are collect about 50 perf counters 
+		SELECT * FROM rpt.PerformanceCounterList WHERE is_captured_ind =1
+	
+--- [rpt].[PerformanceCounter] -- table loaded by proc rpt.usp_GetPerfCountersFromPowerShell. 
+	| -- Perf counter info are collected a 1 min
+
+--- [rpt].[vPerformanceCounter] --- view to list historical collected data. Use this view to see the values collected
+	| -- SELECT * FROM [rpt].[vPerformanceCounter]
+
+--- [rpt].[usp_ClearPerfCtrHistory] --- delete historical data from rpt.PerformanceCounter. By default keep 30 days
+
+Note: To see the collected date showed on the reports you also can use the below procs
+
+exec [rpt].[usp_dailyperfworkload]
+exec [rpt].[usp_getPerformanceCounter_ag_primary]
+exec [rpt].[usp_getPerformanceCounter_ag_secondary]
+exec [rpt].[usp_getPerformanceCounter_range]
+exec [rpt].[usp_memory_utilization_daily]
+exec [rpt].[usp_memory_utilization_range]
+exec [rpt].[usp_disk_utilization_range]
+exec  [rpt].[usp_disk_utilization_daily]
+exec [rpt].[usp_check_worker_thread_exhaustion]
+exec [rpt].[usp_get_ag_replicas_workload]
+exec [rpt].[usp_get_ag_replicas_info]
+
+
+Developed by: Nilton Pinheiro (niltonpinheiro@msn.com)
+Date: 2020/02/14
+Version: 2.0
+
+--- This scripts and Dasboard was created based on SQL Server Performance Baselining Reports
+https://blogs.msdn.microsoft.com/sql_server_team/sql-server-performance-baselining-reports-unleashed-for-enterprise-monitoring/
+
+--==========================
+
+*/
+
+USE msdb
+GO
+IF NOT EXISTS (SELECT name from sys.schemas WHERE name = 'rpt')
+	BEGIN
+		EXEC ('CREATE SCHEMA [rpt]')
+		PRINT 'Schema [rpt] created on server ' + CAST(SERVERPROPERTY('ServerName') AS VARCHAR(100))
+	END
+	ELSE
+	PRINT '|-- Schema [rpt] already exists on server ' + CAST(SERVERPROPERTY('ServerName') AS VARCHAR(100))
+
+GO
+
+DECLARE @is2012 bit
+
+BEGIN TRY
+       IF((SELECT CAST(REPLACE(LEFT(CAST(SERVERPROPERTY('ProductVersion') AS varchar(10)),2),'.','') AS int)) = 11)
+              SET @is2012 = 1
+       ELSE 
+              SET @is2012 = 0
+
+       IF  (SELECT OBJECT_ID('[rpt].[PerformanceCounterList]'))>0
+              BEGIN
+                     DROP TABLE rpt.[PerformanceCounterList]
+                     PRINT '|-- Table PerformanceCounterList exists on server ' + CAST(SERVERPROPERTY('ServerName') AS VARCHAR(100)) + ' dropping table'
+              END
+
+            CREATE TABLE rpt.[PerformanceCounterList](
+                    [counter_name] [VARCHAR](500) NOT NULL,
+                    [is_captured_ind] [BIT] NOT NULL,
+                CONSTRAINT [PK_PerformanceCounterList] PRIMARY KEY CLUSTERED 
+                (
+                    [counter_name] ASC
+                )WITH (PAD_INDEX  = OFF, STATISTICS_NORECOMPUTE  = OFF, IGNORE_DUP_KEY = OFF, ALLOW_ROW_LOCKS  = ON, ALLOW_PAGE_LOCKS  = ON, FILLFACTOR = 100) ON [PRIMARY]
+                ) ON [PRIMARY]
+                     
+                ALTER TABLE rpt.[PerformanceCounterList] ADD  CONSTRAINT [DF_PerformanceCounterList_is_captured_ind]  DEFAULT ((1)) FOR [is_captured_ind]
+                     
+                PRINT '|-- Table PerformanceCounterList created on server ' + CAST(SERVERPROPERTY('ServerName') AS VARCHAR(100))
+ 
+
+       IF  (SELECT OBJECT_ID('[rpt].[PerformanceCounter]'))>0
+              BEGIN
+                     DROP TABLE rpt.[PerformanceCounter]
+                     PRINT '|-- Table PerformanceCounter exists on server ' + CAST(SERVERPROPERTY('ServerName') AS VARCHAR(100)) + ' dropping table'
+              END
+
+			   CREATE TABLE rpt.[PerformanceCounter](
+                           [CounterName] [VARCHAR](250) NOT NULL,
+                           [CounterValue] [VARCHAR](250) NOT NULL,
+                           [DateSampled] [DATETIME] NOT NULL,
+                     CONSTRAINT [PK_PerformanceCounter] PRIMARY KEY CLUSTERED 
+                     (
+                           [CounterName] ASC,
+                           [DateSampled] ASC
+                     )WITH (PAD_INDEX  = OFF, STATISTICS_NORECOMPUTE  = OFF, IGNORE_DUP_KEY = OFF, ALLOW_ROW_LOCKS  = ON, ALLOW_PAGE_LOCKS  = ON, FILLFACTOR = 80) ON [PRIMARY]
+                     ) ON [PRIMARY]
+                     
+                     PRINT '|-- Table PerformanceCounter created on server ' + CAST(SERVERPROPERTY('ServerName') AS VARCHAR(100))
+
+       IF (SELECT OBJECT_ID('[rpt].[vPerformanceCounter]'))>0
+       BEGIN
+			DROP VIEW rpt.[vPerformanceCounter]
+            PRINT '|-- View vPerformanceCounter exists on server ' + CAST(SERVERPROPERTY('ServerName') AS VARCHAR(100)) + ' dropping view'
+		END
+		ELSE
+		    PRINT 'View vPerformanceCounter created on server ' + CAST(SERVERPROPERTY('ServerName') AS VARCHAR(100))
+			
+    EXEC dbo.sp_executesql @statement = N'
+        CREATE VIEW rpt.[vPerformanceCounter]
+        AS
+        SELECT * FROM
+        (SELECT CounterName, CounterValue, DateSampled
+        FROM rpt.PerformanceCounter) AS T1
+        PIVOT
+        (
+        MAX(CounterValue)
+        FOR CounterName IN ([logicaldisk(_total)\avg. disk queue length],
+		[logicaldisk(_total)\avg. disk sec/read],
+		[logicaldisk(_total)\avg. disk sec/transfer],
+		[logicaldisk(_total)\avg. disk sec/write],
+		[logicaldisk(_total)\current disk queue length],
+		[memory\available mbytes],
+		[paging file(_total)\% usage],
+		[paging file(_total)\% usage peak],
+		[processor(_total)\% privileged time],
+		[processor(_total)\% processor time],
+		[process(sqlservr)\% privileged time],
+		[process(sqlservr)\% processor time],
+		[sql statistics\batch requests/sec],
+		[sql statistics\sql compilations/sec],
+		[sql statistics\sql re-compilations/sec],
+		[general statistics\user connections],
+		[buffer manager\page life expectancy],
+		[buffer manager\buffer cache hit ratio],
+		[memory manager\target server memory (kb)],
+		[memory manager\total server memory (kb)],
+		[buffer manager\checkpoint pages/sec],
+		[buffer manager\lazy writes/sec],
+		[transactions\free space in tempdb (kb)])
+	) AS PT;'
+
+       SET NOCOUNT ON
+
+       DECLARE @perfStr VARCHAR(100)
+       DECLARE @instStr VARCHAR(100)
+
+       SELECT @instStr = @@SERVICENAME
+       --SET @instStr = 'NI1'
+
+       IF(@instStr = 'MSSQLSERVER')
+              SET @perfStr = '\SQLServer'
+       ELSE 
+              SET @perfStr = '\MSSQL$' + @instStr
+
+       TRUNCATE TABLE rpt.PerformanceCounterList
+       PRINT '|-- Truncated table rpt.PerformanceCounterList'
+
+       INSERT INTO rpt.PerformanceCounterList(counter_name,is_captured_ind)
+       VALUES        ('\Memory\Pages/sec',0)
+
+       INSERT INTO rpt.PerformanceCounterList(counter_name,is_captured_ind)
+       VALUES        ('\Memory\Pages Input/sec',0)
+
+       INSERT INTO rpt.PerformanceCounterList(counter_name,is_captured_ind)
+       VALUES        ('\Memory\Available MBytes',1)
+              
+       INSERT INTO rpt.PerformanceCounterList(counter_name,is_captured_ind)
+       VALUES        ('\Processor(_Total)\% Processor Time',1)
+
+       INSERT INTO rpt.PerformanceCounterList(counter_name,is_captured_ind)
+       VALUES        ('\Processor(_Total)\% Privileged Time',1)
+
+       --INSERT INTO rpt.PerformanceCounterList(counter_name,is_captured_ind)
+       --VALUES        ('\Process(sqlservr)\% Privileged Time',1)
+
+       INSERT INTO rpt.PerformanceCounterList(counter_name,is_captured_ind)
+       VALUES        ('\Process(sqlservr)\% Processor Time',1)
+
+       INSERT INTO rpt.PerformanceCounterList(counter_name,is_captured_ind)
+       VALUES        ('\Process(sqlservr#1)\% Processor Time',1)
+
+	          INSERT INTO rpt.PerformanceCounterList(counter_name,is_captured_ind)
+       VALUES        ('\Process(sqlservr#2)\% Processor Time',1)
+
+	          INSERT INTO rpt.PerformanceCounterList(counter_name,is_captured_ind)
+       VALUES        ('\Process(sqlservr#3)\% Processor Time',1)
+
+       INSERT INTO rpt.PerformanceCounterList(counter_name,is_captured_ind)
+       VALUES        ('\Paging File(_Total)\% Usage',0)
+
+       INSERT INTO rpt.PerformanceCounterList(counter_name,is_captured_ind)
+       VALUES        ('\Paging File(_Total)\% Usage Peak',0)
+
+       INSERT INTO rpt.PerformanceCounterList(counter_name,is_captured_ind)
+       VALUES        ('\PhysicalDisk(_Total)\Avg. Disk sec/Read',0)
+
+       INSERT INTO rpt.PerformanceCounterList(counter_name,is_captured_ind)
+       VALUES        ('\PhysicalDisk(_Total)\Avg. Disk sec/Write',0)
+
+       INSERT INTO rpt.PerformanceCounterList(counter_name,is_captured_ind)
+       VALUES        ('\PhysicalDisk(_Total)\Disk Reads/sec',0)
+
+       INSERT INTO rpt.PerformanceCounterList(counter_name,is_captured_ind)
+       VALUES        ('\PhysicalDisk(_Total)\Disk Writes/sec',0)
+
+       INSERT INTO rpt.PerformanceCounterList(counter_name,is_captured_ind)
+       VALUES        ('\System\Processor Queue Length',0)
+
+       INSERT INTO rpt.PerformanceCounterList(counter_name,is_captured_ind)
+       VALUES        ('\System\Context Switches/sec',0)
+
+	          INSERT INTO rpt.PerformanceCounterList(counter_name,is_captured_ind)
+       VALUES        ('\LogicalDisk(*)\Avg. Disk Queue Length',1)
+
+       INSERT INTO rpt.PerformanceCounterList(counter_name,is_captured_ind)
+       VALUES        ('\LogicalDisk(*)\Avg. Disk sec/Read',1)
+
+       INSERT INTO rpt.PerformanceCounterList(counter_name,is_captured_ind)
+       VALUES        ('\LogicalDisk(*)\Avg. Disk sec/Transfer',1)
+
+       INSERT INTO rpt.PerformanceCounterList(counter_name,is_captured_ind)
+       VALUES        ('\LogicalDisk(*)\Avg. Disk sec/Write',1)
+
+       INSERT INTO rpt.PerformanceCounterList(counter_name,is_captured_ind)
+       VALUES        ('\LogicalDisk(*)\Current Disk Queue Length',1)
+
+	 -- IOPS
+	INSERT INTO rpt.PerformanceCounterList(counter_name,is_captured_ind) 
+	VALUES        ('\LogicalDisk(*)\Disk Transfers/sec',1)
+
+	INSERT INTO rpt.PerformanceCounterList(counter_name,is_captured_ind) 
+	VALUES        ('\LogicalDisk(*)\Disk Reads/sec',1)
+
+	INSERT INTO rpt.PerformanceCounterList(counter_name,is_captured_ind) 
+	VALUES        ('\LogicalDisk(*)\Disk Writes/sec',1)
+
+
+	--- Used to determine bandwidth 
+	INSERT INTO rpt.PerformanceCounterList(counter_name,is_captured_ind) 
+	VALUES        ('\LogicalDisk(*)\Disk Read Bytes/sec',1)
+
+	INSERT INTO rpt.PerformanceCounterList(counter_name,is_captured_ind) 
+	VALUES        ('\LogicalDisk(*)\Disk Write Bytes/sec',1)
+
+	INSERT INTO rpt.PerformanceCounterList(counter_name,is_captured_ind) 
+	VALUES        ('\LogicalDisk(*)\Disk Bytes/sec',1)
+
+
+       --INSERT INTO rpt.PerformanceCounterList(counter_name,is_captured_ind)
+       --VALUES        ('\Paging File(*)\*',0)
+
+       INSERT INTO rpt.PerformanceCounterList(counter_name,is_captured_ind)
+       VALUES        (@perfStr + ':Buffer Manager\Page life expectancy',1)
+
+       INSERT INTO rpt.PerformanceCounterList(counter_name,is_captured_ind)
+       VALUES        (@perfStr + ':Buffer Manager\Buffer cache hit ratio',1)
+
+       INSERT INTO rpt.PerformanceCounterList(counter_name,is_captured_ind)
+       VALUES        (@perfStr + ':Buffer Manager\Checkpoint Pages/Sec',1)
+
+       INSERT INTO rpt.PerformanceCounterList(counter_name,is_captured_ind)
+       VALUES        (@perfStr + ':Buffer Manager\Lazy Writes/Sec',1)
+
+       INSERT INTO rpt.PerformanceCounterList(counter_name,is_captured_ind)
+       VALUES        (@perfStr + ':Buffer Manager\Page Reads/Sec',1)
+
+       INSERT INTO rpt.PerformanceCounterList(counter_name,is_captured_ind)
+       VALUES        (@perfStr + ':Buffer Manager\Page Writes/Sec',1)
+
+       IF (@is2012 = 0)
+              INSERT INTO rpt.PerformanceCounterList(counter_name,is_captured_ind)
+              VALUES        (@perfStr + ':Buffer Manager\Free Pages',1)
+
+       INSERT INTO rpt.PerformanceCounterList(counter_name,is_captured_ind)
+       VALUES        (@perfStr + ':Buffer Manager\Page Lookups/Sec',1)
+
+       INSERT INTO rpt.PerformanceCounterList(counter_name,is_captured_ind)
+       VALUES        (@perfStr + ':Buffer Manager\Free List Stalls/sec',1)
+
+       INSERT INTO rpt.PerformanceCounterList(counter_name,is_captured_ind)
+       VALUES        (@perfStr + ':Buffer Manager\Readahead pages/sec',1)
+
+       INSERT INTO rpt.PerformanceCounterList(counter_name,is_captured_ind)
+       VALUES        (@perfStr + ':Buffer Manager\Database Pages',0)
+
+       INSERT INTO rpt.PerformanceCounterList(counter_name,is_captured_ind)
+       VALUES        (@perfStr + ':Buffer Manager\Target Pages',0)
+                     
+       INSERT INTO rpt.PerformanceCounterList(counter_name,is_captured_ind)
+       VALUES        (@perfStr + ':Buffer Manager\Total Pages',0)
+
+       INSERT INTO rpt.PerformanceCounterList(counter_name,is_captured_ind)
+       VALUES        (@perfStr + ':Buffer Manager\Stolen Pages',0)
+
+       INSERT INTO rpt.PerformanceCounterList(counter_name,is_captured_ind)
+       VALUES (@perfStr + ':General Statistics\User Connections',1)
+                     
+       INSERT INTO rpt.PerformanceCounterList(counter_name,is_captured_ind)
+       VALUES (@perfStr + ':General Statistics\Processes blocked',0)
+
+       INSERT INTO rpt.PerformanceCounterList(counter_name,is_captured_ind)
+       VALUES (@perfStr + ':General Statistics\Logins/Sec',1)
+
+       INSERT INTO rpt.PerformanceCounterList(counter_name,is_captured_ind)
+       VALUES (@perfStr + ':General Statistics\Logouts/Sec',0)
+
+       INSERT INTO rpt.PerformanceCounterList(counter_name,is_captured_ind)
+       VALUES (@perfStr + ':Memory Manager\Memory Grants Pending',1)
+
+       INSERT INTO rpt.PerformanceCounterList(counter_name,is_captured_ind)
+       VALUES (@perfStr + ':Memory Manager\Total Server Memory (KB)',1)
+
+       INSERT INTO rpt.PerformanceCounterList(counter_name,is_captured_ind)
+       VALUES (@perfStr + ':Memory Manager\Target Server Memory (KB)',1)
+
+       INSERT INTO rpt.PerformanceCounterList(counter_name,is_captured_ind)
+       VALUES (@perfStr + ':Memory Manager\Granted Workspace Memory (KB)',0)
+
+       INSERT INTO rpt.PerformanceCounterList(counter_name,is_captured_ind)
+       VALUES (@perfStr + ':Memory Manager\Maximum Workspace Memory (KB)',0)
+
+       INSERT INTO rpt.PerformanceCounterList(counter_name,is_captured_ind)
+       VALUES (@perfStr + ':Memory Manager\Memory Grants Outstanding',1)
+
+       INSERT INTO rpt.PerformanceCounterList(counter_name,is_captured_ind)
+       VALUES (@perfStr + ':SQL Statistics\Batch Requests/sec',1)
+
+       INSERT INTO rpt.PerformanceCounterList(counter_name,is_captured_ind)
+       VALUES (@perfStr + ':SQL Statistics\SQL Compilations/sec',1)
+
+       INSERT INTO rpt.PerformanceCounterList(counter_name,is_captured_ind)
+       VALUES (@perfStr + ':SQL Statistics\SQL Re-Compilations/sec',1)
+
+       INSERT INTO rpt.PerformanceCounterList(counter_name,is_captured_ind)
+       VALUES (@perfStr + ':SQL Statistics\Auto-Param Attempts/sec',0)
+
+       INSERT INTO rpt.PerformanceCounterList(counter_name,is_captured_ind)
+       VALUES (@perfStr + ':Locks(_Total)\Lock Waits/sec',0)
+
+       INSERT INTO rpt.PerformanceCounterList(counter_name,is_captured_ind)
+       VALUES (@perfStr + ':Locks(_Total)\Lock Requests/sec',0)
+
+       INSERT INTO rpt.PerformanceCounterList(counter_name,is_captured_ind)
+       VALUES (@perfStr + ':Locks(_Total)\Lock Timeouts/sec',0)
+
+       INSERT INTO rpt.PerformanceCounterList(counter_name,is_captured_ind)
+       VALUES (@perfStr + ':Locks(_Total)\Number of Deadlocks/sec',0)
+
+       INSERT INTO rpt.PerformanceCounterList(counter_name,is_captured_ind)
+       VALUES (@perfStr + ':Locks(_Total)\Lock Wait Time (ms)',0)
+
+       INSERT INTO rpt.PerformanceCounterList(counter_name,is_captured_ind)
+       VALUES (@perfStr + ':Locks(_Total)\Average Wait Time (ms)',0)
+
+      INSERT INTO rpt.PerformanceCounterList(counter_name,is_captured_ind)
+       VALUES (@perfStr + ':Databases(_Total)\Transactions/sec',1)
+
+      INSERT INTO rpt.PerformanceCounterList(counter_name,is_captured_ind)
+       VALUES (@perfStr + ':Databases(_Total)\Log Flush Write Time (ms)',1)
+
+       INSERT INTO rpt.PerformanceCounterList(counter_name,is_captured_ind)
+       VALUES (@perfStr + ':Latches\Total Latch Wait Time (ms)',0)
+
+       INSERT INTO rpt.PerformanceCounterList(counter_name,is_captured_ind)
+       VALUES (@perfStr + ':Latches\Latch Waits/sec',0)
+
+       INSERT INTO rpt.PerformanceCounterList(counter_name,is_captured_ind)
+       VALUES (@perfStr + ':Latches\Average Latch Wait Time (ms)',0)
+
+       INSERT INTO rpt.PerformanceCounterList(counter_name,is_captured_ind)
+       VALUES (@perfStr + ':Access Methods\Forwarded Records/Sec',0)
+
+       INSERT INTO rpt.PerformanceCounterList(counter_name,is_captured_ind)
+       VALUES (@perfStr + ':Access Methods\Full Scans/Sec',0)
+
+       INSERT INTO rpt.PerformanceCounterList(counter_name,is_captured_ind)
+       VALUES (@perfStr + ':Access Methods\Page Splits/Sec',0)
+
+       INSERT INTO rpt.PerformanceCounterList(counter_name,is_captured_ind)
+       VALUES (@perfStr + ':Access Methods\Index Searches/Sec',0)
+
+       INSERT INTO rpt.PerformanceCounterList(counter_name,is_captured_ind)
+       VALUES (@perfStr + ':Access Methods\Workfiles Created/Sec',0)
+
+       INSERT INTO rpt.PerformanceCounterList(counter_name,is_captured_ind)
+       VALUES (@perfStr + ':Access Methods\Worktables Created/Sec',0)
+
+       INSERT INTO rpt.PerformanceCounterList(counter_name,is_captured_ind)
+       VALUES (@perfStr + ':Access Methods\Table Lock Escalations/sec',0)
+
+       INSERT INTO rpt.PerformanceCounterList(counter_name,is_captured_ind)
+       VALUES (@perfStr + ':Cursor Manager by Type(_Total)\Active cursors',0)
+
+       INSERT INTO rpt.PerformanceCounterList(counter_name,is_captured_ind)
+       VALUES (@perfStr + ':Transactions\Longest Transaction Running Time',0)
+
+       INSERT INTO rpt.PerformanceCounterList(counter_name,is_captured_ind)
+       VALUES (@perfStr + ':Transactions\Free Space in tempdb (KB)',1)
+
+       INSERT INTO rpt.PerformanceCounterList(counter_name,is_captured_ind)
+       VALUES (@perfStr + ':Transactions\Version Store Size (KB)',0)
+
+	-- IF AG is enabled
+	IF SERVERPROPERTY('IsHadrEnabled') =1 -- AG Enabled
+	BEGIN
+	-- PRIMARY
+	INSERT INTO rpt.PerformanceCounterList(counter_name,is_captured_ind)
+	VALUES        (@perfStr + ':Databases(_Total)\Log Bytes Flushed/sec',1)
+
+	INSERT INTO rpt.PerformanceCounterList(counter_name,is_captured_ind)
+	VALUES        (@perfStr + ':Availability Replica(_Total)\Bytes Sent to Replica/sec',1)
+
+	INSERT INTO rpt.PerformanceCounterList(counter_name,is_captured_ind)
+	VALUES        (@perfStr + ':Availability Replica(_Total)\Resent Messages/sec',1)
+
+	INSERT INTO rpt.PerformanceCounterList(counter_name,is_captured_ind)
+	VALUES        (@perfStr + ':Database Replica(_Total)\Mirrored Write Transactions/sec',1)
+
+	INSERT INTO rpt.PerformanceCounterList(counter_name,is_captured_ind)
+	VALUES        (@perfStr + ':Database Replica(_Total)\Transaction Delay',1)
+
+	-- SECONDAY
+		INSERT INTO rpt.PerformanceCounterList(counter_name,is_captured_ind)
+	VALUES        (@perfStr + ':Database Replica(_Total)\Log Bytes Received/sec',1)
+
+		INSERT INTO rpt.PerformanceCounterList(counter_name,is_captured_ind)
+	VALUES        (@perfStr + ':Database Replica(_Total)\Redone Bytes/sec',1)
+
+		INSERT INTO rpt.PerformanceCounterList(counter_name,is_captured_ind)
+	VALUES        (@perfStr + ':Database Replica(_Total)\Recovery Queue',1)
+
+			INSERT INTO rpt.PerformanceCounterList(counter_name,is_captured_ind)
+	VALUES        (@perfStr + ':Database Replica(_Total)\Log Send Queue',1)
+
+				INSERT INTO rpt.PerformanceCounterList(counter_name,is_captured_ind)
+	VALUES        (@perfStr + ':Database Replica(_Total)\Redo blocked/sec',1)
+
+	END
+	
+    PRINT '|-- Inserts to table rpt.PerformanceCounterList completed'
+
+       IF  (SELECT OBJECT_ID('[rpt].[usp_ClearPerfCtrHistory]'))>0
+              BEGIN
+                     DROP PROCEDURE rpt.[usp_ClearPerfCtrHistory]
+                     PRINT '|-- Stored Procedure usp_ClearPerfCtrHistory exists on server ' + CAST(SERVERPROPERTY('ServerName') AS VARCHAR(100)) + ' dropping stored procedure'
+              END
+
+                     EXEC dbo.sp_executesql @statement = N'
+
+                     CREATE PROCEDURE rpt.[usp_ClearPerfCtrHistory]
+                           @old_date     INT = 10
+                     AS
+
+                     --******************************************************************************************************
+                     --*    Created date : September 2014
+                     --* Purpose:         Clears out performance counter history  
+                     --*
+                     --* Usage:        EXEC usp_ClearPerfCtrHistory: procedure can be called with no parameters and default 
+                     --*                                                                 10 day history will be used
+                     --*                       
+                     --*                                             --OR-- specify the optional parameter below to customize history duration
+                     --*
+                     --*             EXEC ClearBackupHistory
+                     --*                         @old_date              --number of days of history to delete
+                     --*
+                     --*****************************************************************************************************
+
+                     SET NOCOUNT ON
+                     SET XACT_ABORT ON
+
+                     BEGIN TRY
+
+                           IF (SELECT OBJECT_ID(''[rpt].[PerformanceCounter]''))>0
+                                  BEGIN
+                                         DELETE rpt.PerformanceCounter
+                                         WHERE DateSampled < DATEADD(dd,-@old_date, dateadd(dd, datediff(dd,0, GETDATE()),0))
+                                  END
+
+                     END TRY
+                     BEGIN CATCH
+
+                           IF (XACT_STATE()) != 0
+                                  ROLLBACK TRANSACTION;
+                            
+                           DECLARE @errMessage varchar(MAX)
+                           SET @errMessage = ''Stored procedure '' + OBJECT_NAME(@@PROCID) + '' failed with error '' + CAST(ERROR_NUMBER() AS VARCHAR(20)) + ''. '' + ERROR_MESSAGE() 
+                           RAISERROR (@errMessage, 16, 1)
+                                  
+                     END CATCH
+                     '
+                     PRINT '|-- Stored procedure usp_ClearPerfCtrHistory created on server ' + CAST(SERVERPROPERTY('ServerName') AS VARCHAR(100)) 
+
+END TRY
+BEGIN CATCH
+       DECLARE @errMessage varchar(MAX) = ERROR_MESSAGE()
+       PRINT @errMessage
+END CATCH
+
+GO
+
+USE [msdb]
+GO
+
+/****** Object:  StoredProcedure [rpt].[usp_GetPerfCountersFromPowerShell]    Script Date: 19/03/2019 14:53:56 ******/
+IF EXISTS (SELECT name FROM sys.procedures WHERE name ='usp_GetPerfCountersFromPowerShell')
+	DROP PROCEDURE rpt.usp_GetPerfCountersFromPowerShell
+GO
+
+/****** Object:  StoredProcedure [rpt].[usp_GetPerfCountersFromPowerShell]    Script Date: 19/03/2019 14:53:56 ******/
+SET ANSI_NULLS ON
+GO
+
+SET QUOTED_IDENTIFIER ON
+GO
+
+CREATE PROCEDURE [rpt].[usp_GetPerfCountersFromPowerShell]
+AS
+BEGIN
+DECLARE @syscounters NVARCHAR(4000)
+SET @syscounters=STUFF((SELECT DISTINCT ''',''' +LTRIM([counter_name])
+FROM [msdb].[rpt].[PerformanceCounterList]
+WHERE [is_captured_ind] = 1 FOR XML PATH('')), 1, 2, '')+'''' 
+
+DECLARE @cmd NVARCHAR(4000)
+DECLARE @syscountertable TABLE (id INT IDENTITY(1,1), [output] VARCHAR(500))
+DECLARE @syscountervaluestable TABLE (id INT IDENTITY(1,1), [value] VARCHAR(500))
+
+SET @cmd = 'C:\WINDOWS\system32\WindowsPowerShell\v1.0\powershell.exe "& get-counter -counter '+ @syscounters +' | Select-Object -ExpandProperty Readings"'
+INSERT @syscountertable
+EXEC master..xp_cmdshell @cmd
+
+declare @sqlnamedinstance sysname
+declare @networkname sysname
+if (select CHARINDEX('\',@@SERVERNAME)) = 0
+	begin
+	INSERT [msdb].[rpt].[PerformanceCounter] (CounterName, CounterValue, DateSampled)
+--	SELECT  REPLACE(REPLACE(REPLACE(ct.[output],'\\'+@@SERVERNAME+'\',''),' :',''),'sqlserver:','')[CounterName] , CONVERT(varchar(20),ct2.[output]) [CounterValue], GETDATE() [DateSampled]
+	SELECT  REPLACE(REPLACE(REPLACE(ct.[output],'\\'+@@SERVERNAME+'\',''),' :',''),'sqlserver:','')[CounterName] , CONVERT(varchar(20),REPLACE(ct2.[output],',','.')) [CounterValue], GETDATE() [DateSampled]
+	FROM @syscountertable ct
+	LEFT OUTER JOIN (
+	SELECT id - 1 [id], [output]
+	FROM @syscountertable
+	WHERE PATINDEX('%[0-9]%', LEFT([output],1)) > 0  
+	) ct2 ON ct.id = ct2.id
+	WHERE  ct.[output] LIKE '\\%'
+	ORDER BY [CounterName] ASC
+	end
+
+	else
+	begin
+	select @networkname=RTRIM(left(@@SERVERNAME, CHARINDEX('\', @@SERVERNAME) - 1))
+	select @sqlnamedinstance=RIGHT(@@SERVERNAME,CHARINDEX('\',REVERSE(@@SERVERNAME))-1)
+	INSERT [msdb].[rpt].[PerformanceCounter] (CounterName, CounterValue, DateSampled)
+--	SELECT  REPLACE(REPLACE(REPLACE(ct.[output],'\\'+@networkname+'\',''),' :',''),'mssql$'+@sqlnamedinstance+':','')[CounterName] , CONVERT(varchar(20),ct2.[output]) [CounterValue], GETDATE() [DateSampled]
+	SELECT  REPLACE(REPLACE(REPLACE(ct.[output],'\\'+@networkname+'\',''),' :',''),'mssql$'+@sqlnamedinstance+':','')[CounterName] , CONVERT(varchar(20),REPLACE(ct2.[output],',','.')) [CounterValue], GETDATE() [DateSampled]
+	FROM @syscountertable ct
+	LEFT OUTER JOIN (
+	SELECT id - 1 [id], [output]
+	FROM @syscountertable
+	WHERE PATINDEX('%[0-9]%', LEFT([output],1)) > 0  
+	) ct2 ON ct.id = ct2.id
+	WHERE  ct.[output] LIKE '\\%'
+	ORDER BY [CounterName] ASC
+	END
+END
+
+GO
+PRINT '|-- Stored procedure usp_GetPerfCountersFromPowerShell created on server ' + CAST(SERVERPROPERTY('ServerName') AS VARCHAR(100)) 
+
+----- 
+
+USE [msdb]
+GO
+
+/****** Object:  StoredProcedure [rpt].[usp_getPerformanceCounter_range]    Script Date: 19/03/2019 20:23:59 ******/
+IF EXISTS (SELECT name FROM sys.procedures WHERE name ='usp_getPerformanceCounter_range')
+	DROP PROCEDURE rpt.usp_getPerformanceCounter_range
+GO
+
+CREATE proc [rpt].[usp_getPerformanceCounter_range]
+AS
+---- get counter for the current day
+---- gest last 1 hours of data
+
+DECLARE @CPUCOUNT int
+SELECT @CPUCOUNT=cpu_count from sys.dm_os_sys_info
+
+SELECT [Date],[Time] As EventTime,
+ROUND([processor(_total)\% processor time],0) as 'Processor Utilization',
+ROUND(([processor(_total)\% privileged time]*[processor(_total)\% processor time])/100,0) as 'Priviledged Utilization',
+ROUND(([processor(_total)\% processor time]*[process(sqlservr)\% processor time])/100/@CPUCOUNT,0) as 'sqlservr',
+ROUND(([processor(_total)\% processor time]*[process(sqlservr#1)\% processor time])/100/@CPUCOUNT,0) as 'sqlservr1',
+ROUND(([processor(_total)\% processor time]*[process(sqlservr#2)\% processor time])/100/@CPUCOUNT,0) as 'sqlservr2',
+ROUND(([processor(_total)\% processor time]*[process(sqlservr#3)\% processor time])/100/@CPUCOUNT,0) as 'sqlservr3', -- handle till 4 sql instances on the same machine
+ROUND([sql statistics\batch requests/sec],0) as 'Batch Request per second',
+
+ROUND([sql statistics\sql compilations/sec],1) as 'SQL Compilations per second',
+ROUND([sql statistics\sql re-compilations/sec],1) as 'SQL Recompilations per second',
+ROUND([Databases(_Total)\Transactions/sec],0) as 'Transactions per second'
+FROM
+(
+select
+CounterName,
+CONVERT(varchar(20),DateSampled,101) as 'Date',
+LEFT(CONVERT(varchar(20),DateSampled,8),8) as 'Time',
+ROUND(CounterValue,7) as 'CounterValue'
+from msdb.rpt.PerformanceCounter
+where CounterName IN ('processor(_total)\% processor time','processor(_total)\% privileged time',
+'process(sqlservr)\% processor time',
+'process(sqlservr#1)\% processor time','process(sqlservr#2)\% processor time','process(sqlservr#3)\% processor time',
+'sql statistics\batch requests/sec','sql statistics\sql compilations/sec',
+'sql statistics\sql re-compilations/sec', 'Databases(_Total)\Transactions/sec')
+AND DateSampled >= DATEADD(HOUR, -1, GETDATE()) ---CONVERT(date,GETDATE())
+
+) AS p
+PIVOT
+(
+AVG(CounterValue)
+FOR
+CounterName IN ([processor(_total)\% processor time],[processor(_total)\% privileged time],
+[process(sqlservr)\% processor time],[process(sqlservr#1)\% processor time],
+[process(sqlservr#2)\% processor time],[process(sqlservr#3)\% processor time],
+[sql statistics\batch requests/sec],
+[sql statistics\sql compilations/sec],[sql statistics\sql re-compilations/sec],
+[Databases(_Total)\Transactions/sec])
+) AS pivottable
+Order by [Date],[Time] DESC 
+GO
+
+PRINT '|-- Stored procedure usp_getPerformanceCounter_range created on server ' + CAST(SERVERPROPERTY('ServerName') AS VARCHAR(100)) 
+
+--- rpt.usp_memory_utilization_daily
+
+USE msdb
+GO
+IF EXISTS (SELECT name FROM sys.procedures WHERE name ='usp_memory_utilization_daily')
+	DROP PROCEDURE rpt.usp_memory_utilization_daily
+GO
+
+-- Last 60 min
+CREATE PROC [rpt].[usp_memory_utilization_daily]
+AS
+SELECT Date,[Time],
+    [buffer manager\page life expectancy] AS 'Page Life Expectancy',
+    [buffer manager\buffer cache hit ratio] AS 'Buffer Cache Hit Ratio',
+    ROUND([memory manager\target server memory (kb)]/1024.0,0) AS 'Target Server Memory',
+    ROUND([memory manager\total server memory (kb)]/1024.0,0) AS 'Total Server Memory',
+    ROUND([memory\available mbytes],0) AS 'Available Memory',
+    [buffer manager\checkpoint pages/sec] AS 'Checkpoint Pages per sec',
+    [buffer manager\lazy writes/sec] AS 'Lazy Writes per sec',
+    ROUND([buffer manager\free pages],0) AS 'Free pages',
+    ROUND([buffer manager\free list stalls/sec],0) AS 'Free List stalls',
+    ROUND([transactions\free space in tempdb (kb)]/1024.0/1024.0,0) AS 'Tempdb Free Space in GB',
+	ROUND([memory manager\memory grants pending],0) as 'Memory Grants Pending',
+	ROUND([memory manager\memory grants outstanding],0) as 'Memory Grants Outstanding',
+	ROUND([buffer manager\page reads/sec],0) as 'Page Reads per second',
+	ROUND([buffer manager\page writes/sec],0) as 'Page Writes per second'
+    FROM
+    (SELECT     CounterName,
+    CONVERT(varchar(20),DateSampled,101) as 'Date',
+    LEFT(CONVERT(varchar(20),DateSampled,8),8) as 'Time',
+    DATEPART(mi, DateSampled) AS 'Minute',
+    ROUND(CounterValue,0) AS 'CounterValue'
+    FROM	msdb.rpt.PerformanceCounter
+    WHERE     (CounterName IN ('buffer manager\free list stalls/sec','buffer manager\page life expectancy','buffer manager\buffer cache hit ratio',
+    'memory manager\target server memory (kb)','memory manager\total server memory (kb)',
+    'buffer manager\checkpoint pages/sec','buffer manager\lazy writes/sec','buffer manager\free pages',
+    'transactions\free space in tempdb (kb)','memory\available mbytes','buffer manager\page life expectancy',
+	'memory manager\memory grants pending','memory manager\memory grants outstanding',
+	'buffer manager\page reads/sec','buffer manager\page writes/sec'))
+    and DateSampled >= CONVERT(DATE,GETDATE())
+    ) as p
+    PIVOT
+    (
+    AVG(CounterValue)
+    FOR
+    CounterName IN ([buffer manager\page life expectancy],
+    [buffer manager\buffer cache hit ratio],
+    [memory manager\target server memory (kb)],
+    [memory manager\total server memory (kb)],
+    [memory\available mbytes],
+    [buffer manager\checkpoint pages/sec],
+    [buffer manager\lazy writes/sec],
+    [buffer manager\free pages],
+    [buffer manager\free list stalls/sec],
+    [transactions\free space in tempdb (kb)],[memory manager\memory grants pending],
+	[memory manager\memory grants outstanding],
+	[buffer manager\page reads/sec],[buffer manager\page writes/sec])
+    ) AS pivottable
+	--WHERE [Time] >= '14:35'
+    ORDER by [Time] DESC
+
+GO
+PRINT '|-- Stored procedure usp_memory_utilization_daily created on server ' + CAST(SERVERPROPERTY('ServerName') AS VARCHAR(100)) 
+
+--- usp_memory_utilization_range
+IF EXISTS (SELECT name FROM sys.procedures WHERE name ='usp_memory_utilization_range')
+	DROP PROCEDURE rpt.usp_memory_utilization_range
+GO
+
+-- Last 60 min
+CREATE PROC [rpt].[usp_memory_utilization_range]
+AS
+SELECT [Date],[Time],
+          [buffer manager\page life expectancy] AS 'Page Life Expectancy',
+          [buffer manager\buffer cache hit ratio] AS 'Buffer Cache Hit Ratio',
+          ROUND([memory manager\target server memory (kb)]/1024.0,0) AS 'Target Server Memory',
+          ROUND([memory manager\total server memory (kb)]/1024.0,0) AS 'Total Server Memory',
+          ROUND([memory\available mbytes],0) AS 'Available Memory',
+          [buffer manager\checkpoint pages/sec] AS 'Checkpoint Pages per sec',
+          [buffer manager\lazy writes/sec] AS 'Lazy Writes per sec',
+          ROUND([buffer manager\free pages],0) AS 'Free pages',
+          ROUND([buffer manager\free list stalls/sec],0) AS 'Free List stalls',
+          ROUND([transactions\free space in tempdb (kb)]/1024.0/1024.0,0) AS 'Tempdb Free Space in GB',
+		  ROUND([memory manager\memory grants pending],0) as 'Memory Grants Pending',
+		  ROUND([memory manager\memory grants outstanding],0) as 'Memory Grants Outstanding',
+		  ROUND([buffer manager\page reads/sec],0) as 'Page Reads per second',
+		  ROUND([buffer manager\page writes/sec],0) as 'Page Writes per second'
+          FROM
+          (SELECT     CounterName,
+          CONVERT(varchar(20),DateSampled,101) as 'Date',
+          LEFT(CONVERT(varchar(20),DateSampled,8),8) as 'Time',
+          DATEPART(mi, DateSampled) AS 'Minute',
+          ROUND(CounterValue,0) AS 'CounterValue'
+          FROM	msdb.rpt.PerformanceCounter
+          WHERE     (CounterName IN ('buffer manager\free list stalls/sec','buffer manager\page life expectancy','buffer manager\buffer cache hit ratio',
+          'memory manager\target server memory (kb)','memory manager\total server memory (kb)',
+          'buffer manager\checkpoint pages/sec','buffer manager\lazy writes/sec','buffer manager\free pages',
+          'transactions\free space in tempdb (kb)','memory\available mbytes','buffer manager\page life expectancy',
+		  'memory manager\memory grants pending','memory manager\memory grants outstanding',
+		  'buffer manager\page reads/sec','buffer manager\page writes/sec'))
+          and DateSampled >= CONVERT(DATE,GETDATE())
+          ) as p
+          PIVOT
+          (
+          AVG(CounterValue)
+          FOR
+          CounterName IN ([buffer manager\page life expectancy],
+          [buffer manager\buffer cache hit ratio],
+          [memory manager\target server memory (kb)],
+          [memory manager\total server memory (kb)],
+          [memory\available mbytes],
+          [buffer manager\checkpoint pages/sec],
+          [buffer manager\lazy writes/sec],
+          [buffer manager\free pages],
+          [buffer manager\free list stalls/sec],
+          [transactions\free space in tempdb (kb)],[memory manager\memory grants pending],
+		  [memory manager\memory grants outstanding],
+		  [buffer manager\page reads/sec],[buffer manager\page writes/sec])
+          ) AS pivottable
+		  --WHERE [Time] >= '14:35'
+          ORDER by [Time] DESC
+GO
+PRINT '|-- Stored procedure usp_memory_utilization_range created on server ' + CAST(SERVERPROPERTY('ServerName') AS VARCHAR(100)) 
+
+--- rpt.usp_disk_utilization_daily
+
+USE msdb
+GO
+IF EXISTS (SELECT name FROM sys.procedures WHERE name ='usp_disk_utilization_daily')
+	DROP PROCEDURE rpt.usp_disk_utilization_daily
+GO
+
+CREATE PROC rpt.usp_disk_utilization_daily
+AS
+
+SELECT [Date],[Time],
+-- Disk Latency
+ROUND([logicaldisk(_total)\avg. disk sec/read]*1000.0,1) AS 'Disk Read Latency',
+ROUND([logicaldisk(_total)\avg. disk sec/write]*1000.0,1) AS 'Disk Write Latency',
+ROUND([logicaldisk(_total)\avg. disk sec/transfer]*1000.0,1) AS 'Disk Latency',
+
+-- Disk Queue Length
+ROUND([logicaldisk(_total)\avg. disk queue length],2) AS 'Avg. Disk Queue Length',
+ROUND([logicaldisk(_total)\current disk queue length],2) AS 'Current Disk Queue Length',
+
+-- IOPS
+ROUND([logicaldisk(_total)\disk reads/sec],0) AS 'Disk Reads',
+ROUND([logicaldisk(_total)\disk writes/sec],0) AS 'Disk Writes',
+ROUND([logicaldisk(_total)\disk transfers/sec],0) AS 'Disk Transfers',
+
+--- Used to determine bandwidth 
+ROUND([logicaldisk(_total)\disk read bytes/sec]/1024.0/1024.0,1) AS 'Disk Reads Bytes_mb',
+ROUND([logicaldisk(_total)\disk write bytes/sec]/1024.0/1024.0,1) AS 'Disk Writes Bytes_mb',
+ROUND([logicaldisk(_total)\disk bytes/sec]/1024.0/1024.0,1) AS 'Disk Bytes_mb'
+FROM
+(
+select
+CounterName,
+CONVERT(varchar(20),DateSampled,101) as 'Date',
+LEFT(CONVERT(varchar(20),DateSampled,8),8) as 'Time',
+ROUND(CounterValue,7) as 'CounterValue'
+from msdb.rpt.PerformanceCounter
+where CounterName IN ('logicaldisk(_total)\avg. disk sec/read', 'logicaldisk(_total)\avg. disk sec/write', 
+'logicaldisk(_total)\avg. disk sec/transfer','logicaldisk(_total)\avg. disk queue length',
+'logicaldisk(_total)\current disk queue length',
+'logicaldisk(_total)\disk reads/sec','logicaldisk(_total)\disk writes/sec','logicaldisk(_total)\disk transfers/sec',
+'logicaldisk(_total)\disk read bytes/sec','logicaldisk(_total)\disk write bytes/sec','logicaldisk(_total)\disk bytes/sec')
+and DateSampled >= CONVERT(date,GETDATE())
+
+) AS p
+PIVOT
+(
+AVG(CounterValue)
+FOR
+CounterName IN ([logicaldisk(_total)\avg. disk sec/read],[logicaldisk(_total)\avg. disk sec/write] 
+,[logicaldisk(_total)\avg. disk sec/transfer],[logicaldisk(_total)\avg. disk queue length],
+[logicaldisk(_total)\current disk queue length],
+[logicaldisk(_total)\disk reads/sec],[logicaldisk(_total)\disk writes/sec],[logicaldisk(_total)\disk transfers/sec],
+[logicaldisk(_total)\disk read bytes/sec],[logicaldisk(_total)\disk write bytes/sec],[logicaldisk(_total)\disk bytes/sec])
+) AS pivottable
+Order by [Time] DESC 
+
+GO
+PRINT '|-- Stored procedure usp_disk_utilization_daily created on server ' + CAST(SERVERPROPERTY('ServerName') AS VARCHAR(100)) 
+
+-- usp_disk_utilization_range
+USE msdb
+GO
+IF EXISTS (SELECT name FROM sys.procedures WHERE name ='usp_disk_utilization_range')
+	DROP PROCEDURE rpt.usp_disk_utilization_range
+GO
+
+CREATE PROC [rpt].[usp_disk_utilization_range]
+AS
+
+-- Get disk utilization for last hour
+
+SELECT [Date],[Time],
+-- Disk Latency
+ROUND([logicaldisk(_total)\avg. disk sec/read]*1000.0,1) AS 'Disk Read Latency',
+ROUND([logicaldisk(_total)\avg. disk sec/write]*1000.0,1) AS 'Disk Write Latency',
+ROUND([logicaldisk(_total)\avg. disk sec/transfer]*1000.0,1) AS 'Disk Latency',
+
+-- Disk Queue Length
+ROUND([logicaldisk(_total)\avg. disk queue length],2) AS 'Avg. Disk Queue Length',
+ROUND([logicaldisk(_total)\current disk queue length],2) AS 'Current Disk Queue Length',
+
+-- IOPS
+ROUND([logicaldisk(_total)\disk reads/sec],0) AS 'Disk Reads',
+ROUND([logicaldisk(_total)\disk writes/sec],0) AS 'Disk Writes',
+ROUND([logicaldisk(_total)\disk transfers/sec],0) AS 'Disk Transfers',
+
+--- Used to determine bandwidth 
+ROUND([logicaldisk(_total)\disk read bytes/sec]/1024.0/1024.0,1) AS 'Disk Reads Bytes_mb',
+ROUND([logicaldisk(_total)\disk write bytes/sec]/1024.0/1024.0,1) AS 'Disk Writes Bytes_mb',
+ROUND([logicaldisk(_total)\disk bytes/sec]/1024.0/1024.0,1) AS 'Disk Bytes_mb'
+FROM
+(
+select
+CounterName,
+CONVERT(varchar(20),DateSampled,101) as 'Date',
+LEFT(CONVERT(varchar(20),DateSampled,8),8) as 'Time',
+ROUND(CounterValue,7) as 'CounterValue'
+from msdb.rpt.PerformanceCounter
+where CounterName IN ('logicaldisk(_total)\avg. disk sec/read', 'logicaldisk(_total)\avg. disk sec/write', 
+'logicaldisk(_total)\avg. disk sec/transfer','logicaldisk(_total)\avg. disk queue length',
+'logicaldisk(_total)\current disk queue length',
+'logicaldisk(_total)\disk reads/sec','logicaldisk(_total)\disk writes/sec','logicaldisk(_total)\disk transfers/sec',
+'logicaldisk(_total)\disk read bytes/sec','logicaldisk(_total)\disk write bytes/sec','logicaldisk(_total)\disk bytes/sec')
+and DateSampled >= DATEADD(HOUR, -1, GETDATE()) --CONVERT(date,GETDATE())
+
+) AS p
+PIVOT
+(
+AVG(CounterValue)
+FOR
+CounterName IN ([logicaldisk(_total)\avg. disk sec/read],[logicaldisk(_total)\avg. disk sec/write] 
+,[logicaldisk(_total)\avg. disk sec/transfer],[logicaldisk(_total)\avg. disk queue length],
+[logicaldisk(_total)\current disk queue length],
+[logicaldisk(_total)\disk reads/sec],[logicaldisk(_total)\disk writes/sec],[logicaldisk(_total)\disk transfers/sec],
+[logicaldisk(_total)\disk read bytes/sec],[logicaldisk(_total)\disk write bytes/sec],[logicaldisk(_total)\disk bytes/sec])
+) AS pivottable
+Order by [Time] DESC
+GO
+PRINT '|-- Stored procedure usp_disk_utilization_range created on server ' + CAST(SERVERPROPERTY('ServerName') AS VARCHAR(100)) 
+
+--usp_dailyperfworkload
+USE [msdb]
+GO
+
+IF EXISTS (SELECT name FROM sys.procedures WHERE name ='usp_dailyperfworkload')
+	DROP PROCEDURE rpt.usp_dailyperfworkload
+GO
+
+CREATE proc [rpt].[usp_dailyperfworkload]
+AS
+
+	DECLARE @CPUCOUNT int
+	SELECT @CPUCOUNT=cpu_count from sys.dm_os_sys_info
+	SELECT
+	[Date],[Time],
+	ROUND([processor(_total)\% processor time],0) as 'Processor Utilization',
+	ROUND(([processor(_total)\% privileged time]*[processor(_total)\% processor time])/100,0) as 'Priviledged Utilization',
+	ROUND(([processor(_total)\% processor time]*[process(sqlservr)\% processor time])/100/@CPUCOUNT,0) as 'SQL Utilization',
+	ROUND(([processor(_total)\% processor time]*[process(sqlservr#1)\% processor time])/100/@CPUCOUNT,0) as 'sqlservr1',
+	ROUND(([processor(_total)\% processor time]*[process(sqlservr#2)\% processor time])/100/@CPUCOUNT,0) as 'sqlservr2',
+	ROUND(([processor(_total)\% processor time]*[process(sqlservr#3)\% processor time])/100/@CPUCOUNT,0) as 'sqlservr3',
+	ROUND([sql statistics\batch requests/sec],0) as 'Batch Request per second',
+	ROUND([sql statistics\sql compilations/sec],1) as 'SQL Compilations per second',
+	ROUND([sql statistics\sql re-compilations/sec],1) as 'SQL Recompilations per second',
+	ROUND([General Statistics\User Connections],0) as 'User Connections',
+	ROUND([databases(_total)\transactions/sec],0) as 'Transactions per second',
+	ROUND([logicaldisk(_total)\avg. disk sec/read]*1000.0,1) AS 'Disk Read Latency',
+	ROUND([logicaldisk(_total)\avg. disk sec/write]*1000.0,1) AS 'Disk Write Latency',
+	ROUND([memory\available mbytes],0) AS 'Available Memory In MB',
+	ROUND([transactions\free space in tempdb (kb)]/1024.0,0) AS 'Free Space in Tempdb'
+	FROM
+	(
+	select
+	CounterName,
+	CONVERT(varchar(20),DateSampled,101) as 'Date',
+	LEFT(CONVERT(varchar(20),DateSampled,8),8) as 'Time',
+	ROUND(CounterValue,7) as 'CounterValue'
+	from msdb.rpt.PerformanceCounter
+	where CounterName IN ('processor(_total)\% processor time','processor(_total)\% privileged time','databases(_total)\transactions/sec',
+	'process(sqlservr)\% processor time','process(sqlservr#1)\% processor time','process(sqlservr#2)\% processor time','process(sqlservr#3)\% processor time',
+	'sql statistics\batch requests/sec','sql statistics\sql compilations/sec','sql statistics\sql re-compilations/sec','General Statistics\User Connections','logicaldisk(_total)\avg. disk sec/read', 'logicaldisk(_total)\avg. disk sec/write', 'memory\available mbytes','transactions\free space in tempdb (kb)')
+	and DateSampled >= CONVERT (DATE,GETDATE())
+	) AS p
+	PIVOT
+	(
+	AVG(CounterValue)
+	FOR
+	CounterName IN ([processor(_total)\% processor time],[processor(_total)\% privileged time],[databases(_total)\transactions/sec],
+	[process(sqlservr)\% processor time],[process(sqlservr#1)\% processor time],[process(sqlservr#2)\% processor time],[process(sqlservr#3)\% processor time],
+	[sql statistics\batch requests/sec],[sql statistics\sql compilations/sec],[sql statistics\sql re-compilations/sec],[General Statistics\User Connections],[logicaldisk(_total)\avg. disk sec/read], [logicaldisk(_total)\avg. disk sec/write], [memory\available mbytes],[transactions\free space in tempdb (kb)])
+	) AS pivottable
+	Order by [Date],[Time] DESC
+GO
+PRINT '|-- Stored procedure usp_dailyperfworkload created on server ' + CAST(SERVERPROPERTY('ServerName') AS VARCHAR(100)) 
+
+-- AG Information
+USE [msdb]
+GO
+
+IF EXISTS (SELECT name FROM sys.procedures WHERE name ='usp_getPerformanceCounter_ag_primary')
+	DROP PROCEDURE rpt.usp_getPerformanceCounter_ag_primary
+GO
+
+CREATE PROC [rpt].[usp_getPerformanceCounter_ag_primary]
+AS
+
+-- Current day
+
+-- PRIMARY REPLICA
+SELECT [Date],[Time] As EventTime,
+ROUND([Databases(_Total)\Log Bytes Flushed/sec],0) as 'Log Bytes Flushed per sec',
+ROUND([Availability Replica(_Total)\Bytes Sent to Replica/sec],0) as 'Bytes Sent to Replica per sec',
+ROUND([Availability Replica(_Total)\Resent Messages/sec],0) as 'Resent Messages per sec',
+ROUND([Database Replica(_Total)\Mirrored Write Transactions/sec],0) as 'Mirrored Write Transactions per sec',
+ROUND([Database Replica(_Total)\Transaction Delay],0) as 'Transaction Delay',
+CASE WHEN [Database Replica(_Total)\Mirrored Write Transactions/sec] =0 THEN 0
+ELSE ROUND([Database Replica(_Total)\Transaction Delay]/[Database Replica(_Total)\Mirrored Write Transactions/sec],0)
+END 'Avg_Delay_per_Mirrored_Transaction',
+ROUND([Databases(_Total)\Log Flush Write Time (ms)],0) as 'Log Flush Write Time'
+FROM
+(
+SELECT CounterName,
+CONVERT(varchar(20),DateSampled,101) as 'Date',
+LEFT(CONVERT(varchar(20),DateSampled,8),8) as 'Time',
+ROUND(CounterValue,7) as 'CounterValue'
+from msdb.rpt.PerformanceCounter
+where CounterName IN ('Databases(_Total)\Log Bytes Flushed/sec','Availability Replica(_Total)\Bytes Sent to Replica/sec',
+'Availability Replica(_Total)\Resent Messages/sec',
+'Database Replica(_Total)\Mirrored Write Transactions/sec','Database Replica(_Total)\Transaction Delay',
+'Databases(_Total)\Log Flush Write Time (ms)')
+AND DateSampled >= DATEADD(HOUR, -1, GETDATE()) --CONVERT(date,GETDATE())
+
+) AS p
+PIVOT
+(
+AVG(CounterValue)
+FOR
+CounterName IN ([Databases(_Total)\Log Bytes Flushed/sec],[Availability Replica(_Total)\Bytes Sent to Replica/sec],
+[Availability Replica(_Total)\Resent Messages/sec],
+[Database Replica(_Total)\Mirrored Write Transactions/sec],[Database Replica(_Total)\Transaction Delay],
+[Databases(_Total)\Log Flush Write Time (ms)])
+) AS pivottable
+Order by [Date],[Time] DESC
+
+GO
+PRINT '|-- Stored procedure usp_getPerformanceCounter_ag_primary created on server ' + CAST(SERVERPROPERTY('ServerName') AS VARCHAR(100)) 
+
+--- usp_getPerformanceCounter_ag_secondary
+IF EXISTS (SELECT name FROM sys.procedures WHERE name ='usp_getPerformanceCounter_ag_secondary')
+	DROP PROCEDURE rpt.usp_getPerformanceCounter_ag_secondary
+GO
+
+CREATE PROC [rpt].[usp_getPerformanceCounter_ag_secondary]
+AS
+
+-- Current Day -- last hour
+-- SECONDAY REPLICA
+
+SELECT [Date],[Time] As EventTime,
+ROUND([Databases(_Total)\Log Bytes Flushed/sec],0) as 'Log Bytes Flushed per sec',
+ROUND([Database Replica(_Total)\Log Bytes Received/sec],0) as 'Log Bytes Received per sec',
+ROUND([Database Replica(_Total)\Redone Bytes/sec],0) as 'Redone Bytes per sec',
+ROUND([Database Replica(_Total)\Recovery Queue],0) as 'Recovery Queue',
+ROUND([Database Replica(_Total)\Log Send Queue],0) as 'Log Send Queue',
+ROUND([Database Replica(_Total)\Redo blocked/sec],0) as 'Redo blocked per sec',
+ROUND([Databases(_Total)\Log Flush Write Time (ms)],0) as 'Log Flush Write Time'
+
+FROM
+(
+SELECT CounterName,
+CONVERT(varchar(20),DateSampled,101) as 'Date',
+LEFT(CONVERT(varchar(20),DateSampled,8),8) as 'Time',
+ROUND(CounterValue,7) as 'CounterValue'
+from msdb.rpt.PerformanceCounter
+where CounterName IN ('Databases(_Total)\Log Bytes Flushed/sec',
+'Database Replica(_Total)\Log Bytes Received/sec', 'Database Replica(_Total)\Redone Bytes/sec',
+'Database Replica(_Total)\Recovery Queue','Database Replica(_Total)\Log Send Queue',
+'Database Replica(_Total)\Redo blocked/sec','Databases(_Total)\Log Flush Write Time (ms)')
+AND DateSampled >= DATEADD(HOUR, -1, GETDATE()) --- CONVERT(date,GETDATE())
+
+) AS p
+PIVOT
+(
+AVG(CounterValue)
+FOR
+CounterName IN ([Databases(_Total)\Log Bytes Flushed/sec],
+[Database Replica(_Total)\Log Bytes Received/sec],[Database Replica(_Total)\Redone Bytes/sec],
+[Database Replica(_Total)\Recovery Queue],[Database Replica(_Total)\Log Send Queue],
+[Database Replica(_Total)\Redo blocked/sec],[Databases(_Total)\Log Flush Write Time (ms)])
+) AS pivottable
+Order by [Date],[Time] DESC
+
+GO
+PRINT '|-- Stored procedure usp_getPerformanceCounter_ag_secondary created on server ' + CAST(SERVERPROPERTY('ServerName') AS VARCHAR(100)) 
+
+
+--- rpt.usp_check_worker_thread_exhaustion
+
+IF EXISTS (SELECT name FROM sys.procedures WHERE name ='usp_check_worker_thread_exhaustion')
+	DROP PROCEDURE rpt.usp_check_worker_thread_exhaustion
+GO
+
+CREATE PROCEDURE rpt.usp_check_worker_thread_exhaustion
+AS
+-- worker thread exhaustion
+-- Reference: https://github.com/microsoft/tigertoolbox/tree/master/BPCheck
+
+DECLARE @mwthreads_count int 
+SELECT @mwthreads_count = max_workers_count FROM sys.dm_os_sys_info;
+
+DECLARE @avgtskcnt int, @workqcnt int, @avgpendingio int 
+SELECT @avgtskcnt = SUM(runnable_tasks_count)/COUNT(scheduler_id), @workqcnt = SUM(work_queue_count) 
+,@avgpendingio=SUM(pending_disk_io_count)/COUNT(scheduler_id)
+FROM sys.dm_os_schedulers WHERE parent_node_id < 64 AND scheduler_id < 255
+
+IF @avgtskcnt <= 2 AND @workqcnt > 1
+BEGIN
+	SELECT 'Worker_thread_exhaustion' AS [Check], 
+	'[WARNING: Possible worker thread exhaustion (schedulers work queue count is ' 
+	+ CONVERT(NVARCHAR(10), @workqcnt) + '). Because overall runnable tasks count is ' 
+	+ CONVERT(NVARCHAR(10), @avgtskcnt) + ' (<= 2), indicating the server might not be CPU bound, there might be room to increase max_worker_threads]' AS [Deviation], '[Configured max workers = ' + CONVERT(VARCHAR(10),@mwthreads_count) + ']' AS [Comment]
+	, @avgtskcnt AS 'avg_runnable_tasks_count', @workqcnt AS 'sum_work_queue_count', @avgpendingio AS 'avg_pending_disk_io_count'
+END
+ELSE IF @avgtskcnt > 2 AND @workqcnt > 1
+BEGIN
+	SELECT 'Worker_thread_exhaustion' AS [Check], 
+	'[WARNING: Possible worker thread exhaustion (schedulers work queue count is ' 
+	+ CONVERT(NVARCHAR(10), @workqcnt) + '). Overall runnable tasks count is ' 
+	+ CONVERT(NVARCHAR(10), @avgtskcnt) + ' (> 2), also indicating the server might be CPU bound]' AS [Deviation], 
+	'[Configured max workers = ' + CONVERT(VARCHAR(10),@mwthreads_count) + ']' AS [Comment]
+	, @avgtskcnt AS 'avg_runnable_tasks_count', @workqcnt AS 'sum_work_queue_count', @avgpendingio AS 'avg_pending_disk_io_count'
+END
+ELSE
+BEGIN
+	SELECT 'Worker_thread_exhaustion' AS [Check], 
+	'[No worker thread exhaustion (schedulers work queue count is ' 
+	+ CONVERT(NVARCHAR(10), @workqcnt) + '). Overall runnable tasks count is ' 
+	+ CONVERT(NVARCHAR(10), @avgtskcnt) + ' (<= 2)]' AS [Deviation], '[Configured max workers = ' + CONVERT(VARCHAR(10),@mwthreads_count) + ']' AS [Comment]
+	, @avgtskcnt AS 'avg_runnable_tasks_count', @workqcnt AS 'sum_work_queue_count', @avgpendingio AS 'avg_pending_disk_io_count'
+END
+GO
+PRINT '|-- Stored procedure usp_check_worker_thread_exhaustion created on server ' + CAST(SERVERPROPERTY('ServerName') AS VARCHAR(100)) 
+
+--- rpt.usp_get_ag_replicas_workload
+
+IF EXISTS (SELECT name FROM sys.procedures WHERE name ='usp_get_ag_replicas_workload')
+	DROP PROCEDURE rpt.usp_get_ag_replicas_workload
+GO
+CREATE PROCEDURE rpt.usp_get_ag_replicas_workload
+AS
+BEGIN
+	;WITH
+	AG_Stats AS
+	(
+	SELECT AR.replica_server_name,
+	HARS.role_desc,
+	Db_name(DRS.database_id) [DBName],
+	DRS.last_commit_time
+	FROM   sys.dm_hadr_database_replica_states DRS
+	INNER JOIN sys.availability_replicas AR ON DRS.replica_id = AR.replica_id
+	INNER JOIN sys.dm_hadr_availability_replica_states HARS ON AR.group_id = HARS.group_id
+	AND AR.replica_id = HARS.replica_id
+	),
+	Pri_CommitTime AS
+	(
+	SELECT	replica_server_name
+	, DBName
+	, last_commit_time
+	FROM	AG_Stats
+	WHERE	role_desc = 'PRIMARY'
+	),
+	Sec_CommitTime AS
+	(
+	SELECT	replica_server_name
+	, DBName
+	, last_commit_time
+	FROM	AG_Stats
+	WHERE	role_desc = 'SECONDARY'
+	)
+	SELECT p.replica_server_name [primary_replica]
+	, p.[DBName] AS [DatabaseName]
+	, s.replica_server_name [secondary_replica]
+	, DATEDIFF(ss,s.last_commit_time,p.last_commit_time) AS [RPO] INTO #RPO
+	FROM Pri_CommitTime p
+	LEFT JOIN Sec_CommitTime s ON [s].[DBName] = [p].[DBName]
+
+	SELECT TOP 10 ag.name AS 'AG Name', ar.replica_server_name AS 'Replica', db_naME(dr_state.database_id) as 'Database',
+	Role = CASE
+	WHEN ar_state.role_desc IS NULL THEN N'DISCONNECTED'
+	ELSE ar_state.role_desc END,
+	dr_state.synchronization_state_desc,
+	dr_state.suspend_reason_desc,
+	dr_state.log_send_queue_size AS 'Log Send Queue Size',dr_state.log_send_rate AS 'Log Send Rate',
+	 dr_state.redo_queue_size AS 'Redo Queue Size',dr_state.redo_rate AS 'Redo Rate',
+	ISNULL(ROUND(CAST(dr_state.redo_queue_size AS float) / NULLIF(dr_state.redo_rate,0),0),0) as 'RecoveryTime',
+	--ROUND(CAST(dr_state.redo_queue_size AS float) / dr_state.redo_rate,0) as 'RecoveryTime',
+	--RPO.RPO AS 'DataLoss'
+	CONVERT(varchar, DATEADD(ms, RPO.RPO * 1000, 0), 8) AS 'DataLoss'
+	FROM ((sys.availability_groups AS ag JOIN sys.availability_replicas AS ar ON ag.group_id = ar.group_id )
+	JOIN sys.dm_hadr_availability_replica_states AS ar_state  ON ar.replica_id = ar_state.replica_id)
+	JOIN sys.dm_hadr_database_replica_states dr_state on
+	ag.group_id = dr_state.group_id and dr_state.replica_id = ar_state.replica_id
+	LEFT JOIN #RPO RPO ON RPO.DatabaseName = db_naME(dr_state.database_id)
+	--WHERE ar_state.role_desc ='SECONDARY'
+	ORDER BY dr_state.log_send_queue_size DESC
+	drop table #RPO
+
+	/*
+	SELECT TOP 10 ag.name AS 'AG Name', ar.replica_server_name AS 'Replica', db_naME(dr_state.database_id) as 'Database',
+	Role = CASE
+	WHEN ar_state.role_desc IS NULL THEN N'DISCONNECTED'
+	ELSE ar_state.role_desc END,
+	dr_state.synchronization_state_desc,
+	dr_state.suspend_reason_desc,
+	dr_state.log_send_queue_size AS 'Log Send Queue Size', dr_state.redo_queue_size AS 'Redo Queue Size',
+	dr_state.log_send_rate AS 'Log Send Rate',dr_state.redo_rate AS 'Redo Rate',
+	ROUND(CAST(dr_state.redo_queue_size AS float) / dr_state.redo_rate,2) as 'RTO'
+	FROM (( sys.availability_groups AS ag JOIN sys.availability_replicas AS ar ON ag.group_id = ar.group_id )
+	JOIN sys.dm_hadr_availability_replica_states AS ar_state  ON ar.replica_id = ar_state.replica_id)
+	JOIN sys.dm_hadr_database_replica_states dr_state on
+	ag.group_id = dr_state.group_id and dr_state.replica_id = ar_state.replica_id
+	--WHERE ar_state.role_desc ='SECONDARY'
+	ORDER BY dr_state.log_send_queue_size DESC
+	*/
+END
+GO
+PRINT '|-- Stored procedure usp_get_ag_replicas_workload created on server ' + CAST(SERVERPROPERTY('ServerName') AS VARCHAR(100)) 
+
+
+--- rpt.usp_get_ag_replicas_info
+
+IF EXISTS (SELECT name FROM sys.procedures WHERE name ='usp_get_ag_replicas_info')
+	DROP PROCEDURE rpt.usp_get_ag_replicas_info
+GO
+CREATE PROCEDURE rpt.usp_get_ag_replicas_info
+AS
+BEGIN
+
+    ;WITH
+    AG_Stats AS
+    (
+    SELECT AR.replica_server_name,
+    HARS.role_desc,
+    Db_name(DRS.database_id) [DBName],
+    DRS.last_commit_time
+    FROM   sys.dm_hadr_database_replica_states DRS
+    INNER JOIN sys.availability_replicas AR ON DRS.replica_id = AR.replica_id
+    INNER JOIN sys.dm_hadr_availability_replica_states HARS ON AR.group_id = HARS.group_id
+    AND AR.replica_id = HARS.replica_id
+    ),
+    Pri_CommitTime AS
+    (
+    SELECT	replica_server_name
+    , DBName
+    , last_commit_time
+    FROM	AG_Stats
+    WHERE	role_desc = 'PRIMARY'
+    ),
+    Sec_CommitTime AS
+    (
+    SELECT	replica_server_name
+    , DBName
+    , last_commit_time
+    FROM	AG_Stats
+    WHERE	role_desc = 'SECONDARY'
+    )
+    SELECT s.replica_server_name [secondary_replica]
+    , MAX(DATEDIFF(ss,s.last_commit_time,p.last_commit_time)) AS [RPO] INTO #RPO
+    FROM Pri_CommitTime p
+    LEFT JOIN Sec_CommitTime s ON [s].[DBName] = [p].[DBName]
+    GROUP BY s.replica_server_name
+
+    SELECT ag.name, ar.replica_server_name as primary_server_role,
+    ar.availability_mode_desc,
+    ar.failover_mode_desc,
+    Role = CASE WHEN ar_state.role_desc IS NULL THEN N'DISCONNECTED'
+    ELSE ar_state.role_desc END,
+    'synchronization state' = CASE
+    WHEN ar_state.synchronization_health_desc ='NOT_HEALTHY' THEN 'NOT SYNCHRONIZING'
+    WHEN ar_state.synchronization_health_desc ='HEALTHY' THEN 'SYNCHRONIZED'
+    ELSE ar_state.synchronization_health_desc END, -- Partially healthy
+    ar.secondary_role_allow_connections_desc, --rpo.RPO
+    CONVERT(varchar, DATEADD(ms, rpo.RPO * 1000, 0), 8) as RPO
+    FROM sys.dm_hadr_availability_replica_states ar_state
+    JOIN sys.availability_replicas as ar
+    ON ar_state.replica_id = ar.replica_id
+    INNER JOIN sys.availability_groups as ag
+    ON ar.group_id = ag.group_id
+    LEFT join #RPO as rpo
+    on ar.replica_server_name = rpo.secondary_replica
+    drop table #RPO
+
+END
+GO
+PRINT '|-- Stored procedure usp_get_ag_replicas_info created on server ' + CAST(SERVERPROPERTY('ServerName') AS VARCHAR(100)) 
+
+
+--- Checking objects created on msdb
+SELECT * FROM sys.objects WHERE [schema_id]= SCHEMA_ID('rpt') ORDER BY create_date DESC
+
+---
+
+PRINT '|-- Starting jobs creating...'
+
+/****** Object:  Job [AlwaysOn: PerfDashboard Collection Counter]    Script Date: 19/03/2019 15:05:32 ******/
+IF EXISTS (SELECT name FROM msdb.dbo.sysjobs WHERE name=N'AlwaysOn: PerfDashboard Collection Counter')
+	EXEC msdb.dbo.sp_delete_job @job_name=N'AlwaysOn: PerfDashboard Collection Counter', @delete_unused_schedule=1
+GO
+
+/****** Object:  Job [AlwaysOn: PerfDashboard Collection Counter]    Script Date: 19/03/2019 15:05:32 ******/
+BEGIN TRANSACTION
+DECLARE @ReturnCode INT
+SELECT @ReturnCode = 0
+/****** Object:  JobCategory [PerfMon Collection]    Script Date: 19/03/2019 15:05:32 ******/
+IF NOT EXISTS (SELECT name FROM msdb.dbo.syscategories WHERE name=N'PerfMon Collection' AND category_class=1)
+BEGIN
+EXEC @ReturnCode = msdb.dbo.sp_add_category @class=N'JOB', @type=N'LOCAL', @name=N'PerfMon Collection'
+IF (@@ERROR <> 0 OR @ReturnCode <> 0) GOTO QuitWithRollback
+
+END
+
+DECLARE @jobId BINARY(16)
+EXEC @ReturnCode =  msdb.dbo.sp_add_job @job_name=N'AlwaysOn: PerfDashboard Collection Counter', 
+		@enabled=1, 
+		@notify_level_eventlog=2, 
+		@notify_level_email=0, 
+		@notify_level_netsend=0, 
+		@notify_level_page=0, 
+		@delete_level=0, 
+		@description=N'Collect performance counters for AlwaysON Dashboard Reports', 
+		@category_name=N'PerfMon Collection', 
+		@owner_login_name=N'sa', @job_id = @jobId OUTPUT
+IF (@@ERROR <> 0 OR @ReturnCode <> 0) GOTO QuitWithRollback
+/****** Object:  Step [Get PerfMon data]    Script Date: 19/03/2019 15:05:32 ******/
+EXEC @ReturnCode = msdb.dbo.sp_add_jobstep @job_id=@jobId, @step_name=N'Get PerfMon data', 
+		@step_id=1, 
+		@cmdexec_success_code=0, 
+		@on_success_action=1, 
+		@on_success_step_id=0, 
+		@on_fail_action=2, 
+		@on_fail_step_id=0, 
+		@retry_attempts=0, 
+		@retry_interval=0, 
+		@os_run_priority=0, @subsystem=N'TSQL', 
+		@command=N'EXEC rpt.usp_GetPerfCountersFromPowerShell', 
+		@database_name=N'msdb', 
+		@flags=0
+IF (@@ERROR <> 0 OR @ReturnCode <> 0) GOTO QuitWithRollback
+EXEC @ReturnCode = msdb.dbo.sp_update_job @job_id = @jobId, @start_step_id = 1
+IF (@@ERROR <> 0 OR @ReturnCode <> 0) GOTO QuitWithRollback
+EXEC @ReturnCode = msdb.dbo.sp_add_jobschedule @job_id=@jobId, @name=N'Every 1 Minutes', 
+		@enabled=1, 
+		@freq_type=4, 
+		@freq_interval=1, 
+		@freq_subday_type=4, 
+		@freq_subday_interval=1, 
+		@freq_relative_interval=0, 
+		@freq_recurrence_factor=0, 
+		@active_start_date=20140903, 
+		@active_end_date=99991231, 
+		@active_start_time=0, 
+		@active_end_time=235959
+IF (@@ERROR <> 0 OR @ReturnCode <> 0) GOTO QuitWithRollback
+EXEC @ReturnCode = msdb.dbo.sp_add_jobserver @job_id = @jobId, @server_name = N'(local)'
+IF (@@ERROR <> 0 OR @ReturnCode <> 0) GOTO QuitWithRollback
+COMMIT TRANSACTION
+GOTO EndSave
+QuitWithRollback:
+    IF (@@TRANCOUNT > 0) ROLLBACK TRANSACTION
+EndSave:
+GO
+PRINT '|-- Job [AlwaysOn: PerfDashboard Collection Counter] created on server ' + CAST(SERVERPROPERTY('ServerName') AS VARCHAR(100)) 
+
+USE [msdb]
+GO
+
+/****** Object:  Job [AlwaysOn: PerfDashboard Purge]    Script Date: 19/03/2019 15:05:32 ******/
+IF EXISTS (SELECT name FROM msdb.dbo.sysjobs WHERE name=N'AlwaysOn: PerfDashboard Purge')
+	EXEC msdb.dbo.sp_delete_job @job_name=N'AlwaysOn: PerfDashboard Purge', @delete_unused_schedule=1
+GO
+
+/****** Object:  Job [AlwaysOn: PerfDashboard Purge]    Script Date: 30/04/2019 10:30:08 ******/
+BEGIN TRANSACTION
+DECLARE @ReturnCode INT
+SELECT @ReturnCode = 0
+/****** Object:  JobCategory [[Uncategorized (Local)]]    Script Date: 30/04/2019 10:30:08 ******/
+IF NOT EXISTS (SELECT name FROM msdb.dbo.syscategories WHERE name=N'[Uncategorized (Local)]' AND category_class=1)
+BEGIN
+EXEC @ReturnCode = msdb.dbo.sp_add_category @class=N'JOB', @type=N'LOCAL', @name=N'[Uncategorized (Local)]'
+IF (@@ERROR <> 0 OR @ReturnCode <> 0) GOTO QuitWithRollback
+
+END
+
+DECLARE @jobId BINARY(16)
+EXEC @ReturnCode =  msdb.dbo.sp_add_job @job_name=N'AlwaysOn: PerfDashboard Purge', 
+		@enabled=1, 
+		@notify_level_eventlog=0, 
+		@notify_level_email=0, 
+		@notify_level_netsend=0, 
+		@notify_level_page=0, 
+		@delete_level=0, 
+		@description=N'Purge collected performance counter data used on AlwaysOn Dashboard Reports.', 
+		@category_name=N'[Uncategorized (Local)]', 
+		@owner_login_name=N'sa', @job_id = @jobId OUTPUT
+IF (@@ERROR <> 0 OR @ReturnCode <> 0) GOTO QuitWithRollback
+/****** Object:  Step [ClearPerfCtrHistory]    Script Date: 30/04/2019 10:30:08 ******/
+EXEC @ReturnCode = msdb.dbo.sp_add_jobstep @job_id=@jobId, @step_name=N'ClearPerfCtrHistory', 
+		@step_id=1, 
+		@cmdexec_success_code=0, 
+		@on_success_action=1, 
+		@on_success_step_id=0, 
+		@on_fail_action=2, 
+		@on_fail_step_id=0, 
+		@retry_attempts=0, 
+		@retry_interval=0, 
+		@os_run_priority=0, @subsystem=N'TSQL', 
+		@command=N'-- default keep the last 10 days
+exec [rpt].[usp_ClearPerfCtrHistory]  @old_date=10
+', 
+		@database_name=N'msdb', 
+		@flags=0
+IF (@@ERROR <> 0 OR @ReturnCode <> 0) GOTO QuitWithRollback
+EXEC @ReturnCode = msdb.dbo.sp_update_job @job_id = @jobId, @start_step_id = 1
+IF (@@ERROR <> 0 OR @ReturnCode <> 0) GOTO QuitWithRollback
+EXEC @ReturnCode = msdb.dbo.sp_add_jobschedule @job_id=@jobId, @name=N'ClearPerfCtrHistory_Sch', 
+		@enabled=1, 
+		@freq_type=4, 
+		@freq_interval=1, 
+		@freq_subday_type=1, 
+		@freq_subday_interval=0, 
+		@freq_relative_interval=0, 
+		@freq_recurrence_factor=0, 
+		@active_start_date=20190430, 
+		@active_end_date=99991231, 
+		@active_start_time=1000, 
+		@active_end_time=235959
+IF (@@ERROR <> 0 OR @ReturnCode <> 0) GOTO QuitWithRollback
+EXEC @ReturnCode = msdb.dbo.sp_add_jobserver @job_id = @jobId, @server_name = N'(local)'
+IF (@@ERROR <> 0 OR @ReturnCode <> 0) GOTO QuitWithRollback
+COMMIT TRANSACTION
+GOTO EndSave
+QuitWithRollback:
+    IF (@@TRANCOUNT > 0) ROLLBACK TRANSACTION
+EndSave:
+GO
+PRINT '|-- Job [AlwaysOn: PerfDashboard Purge] created on server ' + CAST(SERVERPROPERTY('ServerName') AS VARCHAR(100)) 
+
+--- check jobs created
+SELECT name,description,date_created from msdb..sysjobs order by date_created DESC
+
+PRINT '-- =========== SETUP COMPLETED !!!! ----====='
