@@ -1151,7 +1151,7 @@ BEGIN
 	JOIN sys.dm_hadr_availability_replica_states AS ar_state  ON ar.replica_id = ar_state.replica_id)
 	JOIN sys.dm_hadr_database_replica_states dr_state on
 	ag.group_id = dr_state.group_id and dr_state.replica_id = ar_state.replica_id
-	LEFT JOIN #RPO RPO ON RPO.DatabaseName = db_naME(dr_state.database_id)
+	LEFT JOIN #RPO RPO ON RPO.DatabaseName = db_naME(dr_state.database_id) and ar.replica_server_name = RPO.secondary_replica
 	--WHERE ar_state.role_desc ='SECONDARY'
 	ORDER BY dr_state.log_send_queue_size DESC
 	drop table #RPO
