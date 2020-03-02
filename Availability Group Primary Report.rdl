@@ -12,7 +12,7 @@
     <DataSet Name="ServerProperties">
       <Query>
         <DataSourceName>master</DataSourceName>
-        <CommandText>SELECT        SERVERPROPERTY('ServerName') AS ServerName</CommandText>
+        <CommandText>SELECT SERVERPROPERTY('ServerName')AS ServerName;</CommandText>
       </Query>
       <Fields>
         <Field Name="ServerName">
@@ -24,59 +24,8 @@
     <DataSet Name="AGInfo">
       <Query>
         <DataSourceName>master</DataSourceName>
-        <CommandText>;WITH
-          AG_Stats AS
-          (
-          SELECT AR.replica_server_name,
-          HARS.role_desc,
-          Db_name(DRS.database_id) [DBName],
-          DRS.last_commit_time
-          FROM   sys.dm_hadr_database_replica_states DRS
-          INNER JOIN sys.availability_replicas AR ON DRS.replica_id = AR.replica_id
-          INNER JOIN sys.dm_hadr_availability_replica_states HARS ON AR.group_id = HARS.group_id
-          AND AR.replica_id = HARS.replica_id
-          ),
-          Pri_CommitTime AS
-          (
-          SELECT	replica_server_name
-          , DBName
-          , last_commit_time
-          FROM	AG_Stats
-          WHERE	role_desc = 'PRIMARY'
-          ),
-          Sec_CommitTime AS
-          (
-          SELECT	replica_server_name
-          , DBName
-          , last_commit_time
-          FROM	AG_Stats
-          WHERE	role_desc = 'SECONDARY'
-          )
-          SELECT s.replica_server_name [secondary_replica]
-          , MAX(DATEDIFF(ss,s.last_commit_time,p.last_commit_time)) AS [RPO] INTO #RPO
-          FROM Pri_CommitTime p
-          LEFT JOIN Sec_CommitTime s ON [s].[DBName] = [p].[DBName]
-          GROUP BY s.replica_server_name
-
-          SELECT ag.name, ar.replica_server_name as primary_server_role,
-          ar.availability_mode_desc,
-          ar.failover_mode_desc,
-          Role = CASE WHEN ar_state.role_desc IS NULL THEN N'DISCONNECTED'
-          ELSE ar_state.role_desc END,
-          'synchronization state' = CASE
-          WHEN ar_state.synchronization_health_desc ='NOT_HEALTHY' THEN 'NOT SYNCHRONIZING'
-          WHEN ar_state.synchronization_health_desc ='HEALTHY' THEN 'SYNCHRONIZED'
-          ELSE ar_state.synchronization_health_desc END, -- Partially healthy
-          ar.secondary_role_allow_connections_desc, --rpo.RPO
-          CONVERT(varchar, DATEADD(ms, rpo.RPO * 1000, 0), 8) as RPO
-          FROM sys.dm_hadr_availability_replica_states ar_state
-          JOIN sys.availability_replicas as ar
-          ON ar_state.replica_id = ar.replica_id
-          INNER JOIN sys.availability_groups as ag
-          ON ar.group_id = ag.group_id
-          LEFT join #RPO as rpo
-          on ar.replica_server_name = rpo.secondary_replica
-          drop table #RPO</CommandText>
+        <CommandText>exec msdb.rpt.usp_get_ag_replicas_info
+        </CommandText>
         <rd:UseGenericDesigner>true</rd:UseGenericDesigner>
       </Query>
       <Fields>
@@ -117,78 +66,8 @@
     <DataSet Name="AGReplicaWorkload">
       <Query>
         <DataSourceName>master</DataSourceName>
-        <CommandText>;WITH
-          AG_Stats AS
-          (
-          SELECT AR.replica_server_name,
-          HARS.role_desc,
-          Db_name(DRS.database_id) [DBName],
-          DRS.last_commit_time
-          FROM   sys.dm_hadr_database_replica_states DRS
-          INNER JOIN sys.availability_replicas AR ON DRS.replica_id = AR.replica_id
-          INNER JOIN sys.dm_hadr_availability_replica_states HARS ON AR.group_id = HARS.group_id
-          AND AR.replica_id = HARS.replica_id
-          ),
-          Pri_CommitTime AS
-          (
-          SELECT	replica_server_name
-          , DBName
-          , last_commit_time
-          FROM	AG_Stats
-          WHERE	role_desc = 'PRIMARY'
-          ),
-          Sec_CommitTime AS
-          (
-          SELECT	replica_server_name
-          , DBName
-          , last_commit_time
-          FROM	AG_Stats
-          WHERE	role_desc = 'SECONDARY'
-          )
-          SELECT p.replica_server_name [primary_replica]
-          , p.[DBName] AS [DatabaseName]
-          , s.replica_server_name [secondary_replica]
-          , DATEDIFF(ss,s.last_commit_time,p.last_commit_time) AS [RPO] INTO #RPO
-          FROM Pri_CommitTime p
-          LEFT JOIN Sec_CommitTime s ON [s].[DBName] = [p].[DBName]
-
-          SELECT TOP 10 ag.name AS 'AG Name', ar.replica_server_name AS 'Replica Instance', db_naME(dr_state.database_id) as 'Database',
-          Role = CASE
-          WHEN ar_state.role_desc IS NULL THEN N'DISCONNECTED'
-          ELSE ar_state.role_desc END,
-          dr_state.synchronization_state_desc,
-          dr_state.suspend_reason_desc,
-          dr_state.log_send_queue_size AS 'Log Send Queue Size', dr_state.redo_queue_size AS 'Redo Queue Size',
-          dr_state.log_send_rate AS 'Log Send Rate',dr_state.redo_rate AS 'Redo Rate',
-          ROUND(CAST(dr_state.redo_queue_size AS float) / iif(dr_state.redo_rate=0,1,dr_state.redo_rate),0) as 'RecoveryTime',
-          --RPO.RPO AS 'DataLoss'
-          CONVERT(varchar, DATEADD(ms, RPO.RPO * 1000, 0), 8) AS 'DataLoss'
-          FROM ((sys.availability_groups AS ag JOIN sys.availability_replicas AS ar ON ag.group_id = ar.group_id )
-          JOIN sys.dm_hadr_availability_replica_states AS ar_state  ON ar.replica_id = ar_state.replica_id)
-          JOIN sys.dm_hadr_database_replica_states dr_state on
-          ag.group_id = dr_state.group_id and dr_state.replica_id = ar_state.replica_id
-          LEFT JOIN #RPO RPO ON RPO.DatabaseName = db_naME(dr_state.database_id) and ar.replica_server_name = RPO.secondary_replica
-          --WHERE ar_state.role_desc ='SECONDARY'
-          ORDER BY dr_state.log_send_queue_size DESC
-          drop table #RPO
-
-          /*
-          SELECT TOP 10 ag.name AS 'AG Name', ar.replica_server_name AS 'Replica Instance', db_naME(dr_state.database_id) as 'Database',
-          Role = CASE
-          WHEN ar_state.role_desc IS NULL THEN N'DISCONNECTED'
-          ELSE ar_state.role_desc END,
-          dr_state.synchronization_state_desc,
-          dr_state.suspend_reason_desc,
-          dr_state.log_send_queue_size AS 'Log Send Queue Size', dr_state.redo_queue_size AS 'Redo Queue Size',
-          dr_state.log_send_rate AS 'Log Send Rate',dr_state.redo_rate AS 'Redo Rate',
-          ROUND(CAST(dr_state.redo_queue_size AS float) / dr_state.redo_rate,2) as 'RTO'
-          FROM (( sys.availability_groups AS ag JOIN sys.availability_replicas AS ar ON ag.group_id = ar.group_id )
-          JOIN sys.dm_hadr_availability_replica_states AS ar_state  ON ar.replica_id = ar_state.replica_id)
-          JOIN sys.dm_hadr_database_replica_states dr_state on
-          ag.group_id = dr_state.group_id and dr_state.replica_id = ar_state.replica_id
-          --WHERE ar_state.role_desc ='SECONDARY'
-          ORDER BY dr_state.log_send_queue_size DESC
-          */</CommandText>
+        <CommandText>exec msdb.rpt.usp_get_ag_replicas_workload
+        </CommandText>
         <rd:UseGenericDesigner>true</rd:UseGenericDesigner>
       </Query>
       <Fields>
@@ -196,8 +75,8 @@
           <DataField>AG Name</DataField>
           <rd:TypeName>System.String</rd:TypeName>
         </Field>
-        <Field Name="Replica_Instance">
-          <DataField>Replica Instance</DataField>
+        <Field Name="Replica">
+          <DataField>Replica</DataField>
           <rd:TypeName>System.String</rd:TypeName>
         </Field>
         <Field Name="Database">
@@ -218,27 +97,27 @@
         </Field>
         <Field Name="Log_Send_Queue_Size">
           <DataField>Log Send Queue Size</DataField>
-          <rd:TypeName>System.Int64</rd:TypeName>
+          <rd:TypeName>System.Int32</rd:TypeName>
         </Field>
         <Field Name="Redo_Queue_Size">
           <DataField>Redo Queue Size</DataField>
-          <rd:TypeName>System.Int64</rd:TypeName>
+          <rd:TypeName>System.Int32</rd:TypeName>
         </Field>
         <Field Name="Log_Send_Rate">
           <DataField>Log Send Rate</DataField>
-          <rd:TypeName>System.Int64</rd:TypeName>
+          <rd:TypeName>System.Int32</rd:TypeName>
         </Field>
         <Field Name="Redo_Rate">
           <DataField>Redo Rate</DataField>
-          <rd:TypeName>System.Int64</rd:TypeName>
+          <rd:TypeName>System.Int32</rd:TypeName>
         </Field>
         <Field Name="RecoveryTime">
           <DataField>RecoveryTime</DataField>
-          <rd:TypeName>System.Double</rd:TypeName>
+          <rd:TypeName>System.Int32</rd:TypeName>
         </Field>
         <Field Name="DataLoss">
           <DataField>DataLoss</DataField>
-          <rd:TypeName>System.String</rd:TypeName>
+          <rd:TypeName>System.Int32</rd:TypeName>
         </Field>
       </Fields>
     </DataSet>
@@ -319,22 +198,22 @@
                   <Width>1.23372in</Width>
                 </TablixColumn>
                 <TablixColumn>
-                  <Width>1.65911in</Width>
+                  <Width>1.46119in</Width>
                 </TablixColumn>
                 <TablixColumn>
                   <Width>1.35171in</Width>
                 </TablixColumn>
                 <TablixColumn>
-                  <Width>1.18845in</Width>
+                  <Width>1.08279in</Width>
                 </TablixColumn>
                 <TablixColumn>
-                  <Width>0.95112in</Width>
+                  <Width>1.53043in</Width>
                 </TablixColumn>
                 <TablixColumn>
-                  <Width>1.27667in</Width>
+                  <Width>1.05792in</Width>
                 </TablixColumn>
                 <TablixColumn>
-                  <Width>1.09883in</Width>
+                  <Width>1.03585in</Width>
                 </TablixColumn>
               </TablixColumns>
               <TablixRows>
@@ -588,7 +467,7 @@
                             <Paragraph>
                               <TextRuns>
                                 <TextRun>
-                                  <Value>Role</Value>
+                                  <Value>Role (Open AG Secondary report)</Value>
                                   <Style>
                                     <FontFamily>Segoe UI Semibold</FontFamily>
                                     <FontSize>8pt</FontSize>
@@ -609,6 +488,7 @@
                               </Action>
                             </Actions>
                           </ActionInfo>
+                          <ToolTip>Click here to get information about the SECONDARY replica...</ToolTip>
                           <Style>
                             <Border>
                               <Style>Solid</Style>
@@ -1104,7 +984,7 @@
             <Top>0.06944in</Top>
             <Left>0.07102in</Left>
             <Height>0.80914in</Height>
-            <Width>9.93733in</Width>
+            <Width>9.93133in</Width>
             <Style>
               <Border>
                 <Style>Solid</Style>
@@ -1934,7 +1814,7 @@
                             <Paragraph>
                               <TextRuns>
                                 <TextRun>
-                                  <Value>Replica Instance</Value>
+                                  <Value>Replica</Value>
                                   <Style>
                                     <FontFamily>Segoe UI Semibold</FontFamily>
                                     <FontSize>8pt</FontSize>
@@ -2425,7 +2305,7 @@
                             <Paragraph>
                               <TextRuns>
                                 <TextRun>
-                                  <Value>=Fields!Replica_Instance.Value</Value>
+                                  <Value>=Fields!Replica.Value</Value>
                                   <Style>
                                     <FontFamily>Segoe UI Light</FontFamily>
                                     <FontSize>8pt</FontSize>
@@ -4235,7 +4115,7 @@ SUSPEND_FROM_XRF_UPDATE = Unable to find the common log point (see error log)</V
                 <Paragraph>
                   <TextRuns>
                     <TextRun>
-                      <Value>AlwaysOn Performance Dashboard (v2.0.11): Originally created by: Nilton Pinheiro | MVP Reconnect | Feedback: niltonpinheirol@msn.com</Value>
+                      <Value>AlwaysOn Performance Dashboard (v2.0.12): Originally created by: Nilton Pinheiro | MVP Reconnect | Feedback: niltonpinheirol@msn.com</Value>
                       <Style>
                         <Color>Silver</Color>
                       </Style>
