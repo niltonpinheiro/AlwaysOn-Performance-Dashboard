@@ -612,7 +612,7 @@
                         <FontSize>8pt</FontSize>
                       </Style>
                     </ChartAxisTitle>
-                    <Interval>1</Interval>
+                    <Interval>2</Interval>
                     <ChartMajorGridLines>
                       <Enabled>False</Enabled>
                       <Style>
@@ -988,7 +988,7 @@
                         <FontSize>8pt</FontSize>
                       </Style>
                     </ChartAxisTitle>
-                    <Interval>1</Interval>
+                    <Interval>2</Interval>
                     <ChartMajorGridLines>
                       <Enabled>False</Enabled>
                       <Style>
@@ -1014,6 +1014,7 @@
                     <Angle>90</Angle>
                     <PreventLabelOffset>true</PreventLabelOffset>
                     <AllowLabelRotation>Rotate45</AllowLabelRotation>
+                    <LabelsAutoFitDisabled>true</LabelsAutoFitDisabled>
                     <MinFontSize>8pt</MinFontSize>
                     <ChartAxisScaleBreak>
                       <Style />
@@ -1186,7 +1187,7 @@
               </Style>
             </ChartNoDataMessage>
             <DataSetName>PerfCounters</DataSetName>
-            <Top>1.32407in</Top>
+            <Top>1.33657in</Top>
             <Left>0.18754in</Left>
             <Height>2.79195in</Height>
             <Width>5.05304in</Width>
@@ -1314,7 +1315,7 @@
                         <FontSize>8pt</FontSize>
                       </Style>
                     </ChartAxisTitle>
-                    <Interval>1</Interval>
+                    <Interval>2</Interval>
                     <ChartMajorGridLines>
                       <Enabled>False</Enabled>
                       <Style>
@@ -1640,7 +1641,7 @@
                         <FontSize>8pt</FontSize>
                       </Style>
                     </ChartAxisTitle>
-                    <Interval>1</Interval>
+                    <Interval>2</Interval>
                     <ChartMajorGridLines>
                       <Enabled>False</Enabled>
                       <Style>
@@ -2259,7 +2260,7 @@
                         <FontSize>8pt</FontSize>
                       </Style>
                     </ChartAxisTitle>
-                    <Interval>1</Interval>
+                    <Interval>2</Interval>
                     <ChartMajorGridLines>
                       <Enabled>False</Enabled>
                       <Style>
@@ -2552,7 +2553,7 @@
                         <FontSize>8pt</FontSize>
                       </Style>
                     </ChartAxisTitle>
-                    <Interval>1</Interval>
+                    <Interval>2</Interval>
                     <ChartMajorGridLines>
                       <Enabled>False</Enabled>
                       <Style>
@@ -4292,10 +4293,19 @@
                 <Paragraph>
                   <TextRuns>
                     <TextRun>
-                      <Value>="Server Name: "&amp;First(Fields!ServerName.Value, "ServerProperties")</Value>
+                      <Value>Server Name: </Value>
                       <Style>
                         <FontSize>9pt</FontSize>
                         <FontWeight>Bold</FontWeight>
+                      </Style>
+                    </TextRun>
+                    <TextRun>
+                      <Value>=First(Fields!ServerName.Value, "ServerProperties")</Value>
+                      <Style>
+                        <FontSize>9pt</FontSize>
+                        <FontWeight>Bold</FontWeight>
+                        <TextDecoration>Underline</TextDecoration>
+                        <Color>Blue</Color>
                       </Style>
                     </TextRun>
                   </TextRuns>
