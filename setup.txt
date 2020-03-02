@@ -35,7 +35,7 @@ exec [rpt].[usp_getPerformanceCounter_range]
 exec [rpt].[usp_memory_utilization_daily]
 exec [rpt].[usp_memory_utilization_range]
 exec [rpt].[usp_disk_utilization_range]
-exec  [rpt].[usp_disk_utilization_daily]
+exec [rpt].[usp_disk_utilization_daily]
 exec [rpt].[usp_check_worker_thread_exhaustion]
 exec [rpt].[usp_get_ag_replicas_workload]
 exec [rpt].[usp_get_ag_replicas_info]
@@ -44,6 +44,12 @@ exec [rpt].[usp_get_ag_replicas_info]
 Developed by: Nilton Pinheiro (niltonpinheiro@msn.com)
 Date: 2020/02/14
 Version: 2.0
+
+-----------------------
+Modified by: Marcelo Fernandes  
+Date: 2020/03/02
+Versio: 2.1
+Modification: Fixed the issue on usp_get_ag_replicas_workload (cartesian product)
 
 --- This scripts and Dasboard was created based on SQL Server Performance Baselining Reports
 https://blogs.msdn.microsoft.com/sql_server_team/sql-server-performance-baselining-reports-unleashed-for-enterprise-monitoring/
