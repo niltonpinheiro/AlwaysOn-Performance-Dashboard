@@ -1,0 +1,23 @@
+
+use msdb
+GO
+SELECT so.name,so.type_desc,SCHEMA_NAME(so.schema_id) as schemaname,
+CASE type_desc
+WHEN 'USER_TABLE' THEN 'DROP TABLE ['+ SCHEMA_NAME(so.schema_id) + '].['+ so.name + '];'
+WHEN 'SQL_STORED_PROCEDURE' THEN 'DROP PROCEDURE ['+ SCHEMA_NAME(so.schema_id) + '].['+ so.name + '];'
+WHEN 'VIEW' THEN 'DROP VIEW ['+ SCHEMA_NAME(so.schema_id) + '].['+ so.name + '];'
+END AS statament
+FROM sys.objects so
+INNER JOIN sys.schemas ss
+ON  so.schema_id = ss.schema_id
+WHERE ss.name = 'rpt'
+AND so.name NOT IN ('PK_PerformanceCounter','PK_PerformanceCounterList','DF_PerformanceCounterList_is_captured_ind')
+ORDER BY create_date DESC
+
+
+-- drop sql jobs
+
+-- EXEC msdb.dbo.sp_delete_job @job_name=N'AlwaysOn: PerfDashboard Collection Counter', @delete_unused_schedule=1
+-- EXEC msdb.dbo.sp_delete_job @job_name=N'AlwaysOn: PerfDashboard Purge', @delete_unused_schedule=1
+
+
